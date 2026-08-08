@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import sqlite3
+import time
+from collections.abc import Callable
 from datetime import UTC, datetime
+from pathlib import Path
 
 import httpx
 
@@ -17,6 +21,102 @@ IEEE_JOURNALS = {
 }
 
 
+IEEE_MIN_INTERVAL_SECONDS = 0.11
+IEEE_DAILY_CALL_LIMIT = 200
+
+
+class IeeeQuotaExceeded(RuntimeError):
+    """Raised before an HTTP request when the persisted daily quota is exhausted."""
+
+
+class IeeeApiGuard:
+    """Cross-process request spacing and UTC daily quota backed by SQLite."""
+
+    def __init__(
+        self,
+        db_path: Path,
+        min_interval_seconds: float = IEEE_MIN_INTERVAL_SECONDS,
+        daily_call_limit: int = IEEE_DAILY_CALL_LIMIT,
+        clock: Callable[[], float] = time.time,
+        sleeper: Callable[[float], None] = time.sleep,
+    ):
+        self.db_path = db_path
+        self.min_interval_seconds = min_interval_seconds
+        self.daily_call_limit = daily_call_limit
+        self.clock = clock
+        self.sleeper = sleeper
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._initialize()
+
+    def _connect(self) -> sqlite3.Connection:
+        connection = sqlite3.connect(self.db_path, timeout=30, isolation_level=None)
+        connection.execute("PRAGMA busy_timeout = 30000")
+        return connection
+
+    def _initialize(self) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS api_rate_limits (
+                    source TEXT PRIMARY KEY,
+                    quota_day TEXT NOT NULL,
+                    call_count INTEGER NOT NULL CHECK(call_count >= 0),
+                    last_request_at REAL
+                )
+                """
+            )
+
+    def reserve_call(self) -> int:
+        """Reserve one call atomically and return today's persisted call count."""
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                """
+                SELECT quota_day, call_count, last_request_at
+                FROM api_rate_limits WHERE source = ?
+                """,
+                ("ieee_xplore",),
+            ).fetchone()
+            now = self.clock()
+            quota_day = datetime.fromtimestamp(now, tz=UTC).date().isoformat()
+            call_count = int(row[1]) if row and row[0] == quota_day else 0
+            if call_count >= self.daily_call_limit:
+                raise IeeeQuotaExceeded(
+                    f"IEEE Xplore daily API quota exhausted "
+                    f"({call_count}/{self.daily_call_limit} calls on {quota_day} UTC)"
+                )
+
+            last_request_at = float(row[2]) if row and row[2] is not None else None
+            if last_request_at is not None:
+                elapsed = max(0.0, now - last_request_at)
+                wait_seconds = self.min_interval_seconds - elapsed
+                if wait_seconds > 0:
+                    self.sleeper(wait_seconds)
+                    now = self.clock()
+
+            call_count += 1
+            connection.execute(
+                """
+                INSERT INTO api_rate_limits(source, quota_day, call_count, last_request_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(source) DO UPDATE SET
+                    quota_day = excluded.quota_day,
+                    call_count = excluded.call_count,
+                    last_request_at = excluded.last_request_at
+                """,
+                ("ieee_xplore", quota_day, call_count, now),
+            )
+            connection.commit()
+            return call_count
+        except Exception:
+            if connection.in_transaction:
+                connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+
 class IeeeXploreCollector:
     name = "ieee_xplore"
     endpoint = "https://ieeexploreapi.ieee.org/api/v1/search/articles"
@@ -25,12 +125,14 @@ class IeeeXploreCollector:
         self,
         api_key: str,
         user_agent: str,
+        quota_db_path: Path,
         journals: dict[str, str] | None = None,
     ):
         if not api_key:
             raise ValueError("IEEE_XPLORE_API_KEY is required")
         self.api_key = api_key
         self.journals = journals or IEEE_JOURNALS
+        self.api_guard = IeeeApiGuard(quota_db_path)
         self.client = httpx.Client(timeout=30, headers={"User-Agent": user_agent})
 
     def search(self, query: str, since: datetime, limit: int = 25) -> list[PaperCandidate]:
@@ -38,6 +140,7 @@ class IeeeXploreCollector:
         results: list[PaperCandidate] = []
         seen: set[str] = set()
         for short_name, publication_title in self.journals.items():
+            self.api_guard.reserve_call()
             response = self.client.get(
                 self.endpoint,
                 params={

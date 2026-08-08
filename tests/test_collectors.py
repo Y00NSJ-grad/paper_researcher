@@ -1,10 +1,18 @@
+import sqlite3
+import tempfile
 import unittest
 from datetime import UTC, datetime
+from pathlib import Path
 
 import httpx
 
 from radar.collectors.huggingface import HuggingFaceCollector
-from radar.collectors.ieee_xplore import IEEE_JOURNALS, IeeeXploreCollector
+from radar.collectors.ieee_xplore import (
+    IEEE_JOURNALS,
+    IeeeApiGuard,
+    IeeeQuotaExceeded,
+    IeeeXploreCollector,
+)
 from radar.collectors.openreview import OpenReviewCollector
 from radar.collectors.semantic_scholar import SemanticScholarCollector
 
@@ -68,13 +76,73 @@ class CollectorTest(unittest.TestCase):
                 },
             )
 
-        collector = IeeeXploreCollector("ieee-key", "test-agent")
-        collector.client = client_with(handler)
-        papers = collector.search("network learning", SINCE, 25)
+        with tempfile.TemporaryDirectory() as directory:
+            collector = IeeeXploreCollector(
+                "ieee-key", "test-agent", Path(directory) / "quota.db"
+            )
+            collector.client = client_with(handler)
+            papers = collector.search("network learning", SINCE, 25)
         self.assertEqual(set(requested_venues), set(IEEE_JOURNALS.values()))
         self.assertEqual(len(papers), 5)
         journal_ids = {paper.external_ids["ieee_journal"] for paper in papers}
         self.assertEqual(journal_ids, set(IEEE_JOURNALS))
+
+    def test_ieee_guard_enforces_spacing_and_persisted_daily_limit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            db_path = Path(directory) / "quota.db"
+            clock_value = [datetime(2026, 8, 9, tzinfo=UTC).timestamp()]
+            sleeps = []
+
+            def clock():
+                return clock_value[0]
+
+            def sleeper(delay):
+                sleeps.append(delay)
+                clock_value[0] += delay
+
+            guard = IeeeApiGuard(db_path, clock=clock, sleeper=sleeper)
+            for expected_count in range(1, 201):
+                self.assertEqual(guard.reserve_call(), expected_count)
+
+            self.assertEqual(len(sleeps), 199)
+            self.assertTrue(all(delay >= 0.109999 for delay in sleeps))
+            with sqlite3.connect(db_path) as connection:
+                row = connection.execute(
+                    "SELECT quota_day, call_count FROM api_rate_limits "
+                    "WHERE source = ?",
+                    ("ieee_xplore",),
+                ).fetchone()
+            self.assertEqual(row, ("2026-08-09", 200))
+
+            persisted_guard = IeeeApiGuard(db_path, clock=clock, sleeper=sleeper)
+            with self.assertRaises(IeeeQuotaExceeded):
+                persisted_guard.reserve_call()
+
+            clock_value[0] += 24 * 60 * 60
+            self.assertEqual(persisted_guard.reserve_call(), 1)
+
+    def test_ieee_quota_failure_happens_before_http_request(self):
+        class ExhaustedGuard:
+            def reserve_call(self):
+                raise IeeeQuotaExceeded("quota exhausted")
+
+        http_calls = 0
+
+        def handler(request):
+            nonlocal http_calls
+            http_calls += 1
+            return httpx.Response(200, json={"articles": []})
+
+        with tempfile.TemporaryDirectory() as directory:
+            collector = IeeeXploreCollector(
+                "ieee-key", "test-agent", Path(directory) / "quota.db"
+            )
+            collector.api_guard = ExhaustedGuard()
+            collector.client = client_with(handler)
+            with self.assertRaises(IeeeQuotaExceeded):
+                collector.search("network learning", SINCE)
+
+        self.assertEqual(http_calls, 0)
 
     def test_openreview_unwraps_api_v2_content(self):
         timestamp = int(datetime(2026, 8, 9, tzinfo=UTC).timestamp() * 1000)

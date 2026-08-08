@@ -106,6 +106,8 @@ Slack을 사용하면 `SLACK_WEBHOOK_URL`을 입력합니다. OpenAI 요약을 �
 Semantic Scholar, OpenReview, Hugging Face 공개 데이터는 토큰 없이도 조회할 수
 있습니다. 더 높은 호출 한도나 비공개 데이터가 필요할 때 각 토큰을 설정합니다.
 IEEE Xplore 수집기는 발급받은 `IEEE_XPLORE_API_KEY`가 있을 때만 활성화됩니다.
+IEEE 요청은 프로세스 간 최소 0.11초 간격으로 실행되며, UTC 기준 일일 호출량을
+SQLite에 저장합니다. 하루 200회를 사용하면 다음 요청은 API 호출 전에 중단됩니다.
 
 ### 6. 환경변수 적용
 

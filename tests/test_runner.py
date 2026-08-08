@@ -58,7 +58,7 @@ class RunnerTest(unittest.TestCase):
             content = report.read_text(encoding="utf-8")
             self.assertIn("MARL Routing", content)
             self.assertIn("Relevant: 1", content)
-            self.assertEqual(content.count("## 1."), 1)
+            self.assertEqual(content.count("> 1."), 1)
             self.assertEqual(len(runner.store.papers_for_run(1)), 1)
 
 

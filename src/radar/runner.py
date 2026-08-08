@@ -51,7 +51,11 @@ class RadarRunner:
             ]
             if settings.ieee_xplore_api_key:
                 self.collectors.append(
-                    IeeeXploreCollector(settings.ieee_xplore_api_key, settings.user_agent)
+                    IeeeXploreCollector(
+                        settings.ieee_xplore_api_key,
+                        settings.user_agent,
+                        settings.db_path,
+                    )
                 )
 
     def collect_and_report(
