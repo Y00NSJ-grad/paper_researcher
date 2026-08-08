@@ -30,7 +30,7 @@ def summary_from_row(row: dict) -> PaperSummary | None:
 
 def render_digest(kind: str, rows: list[dict], stats: dict[str, int]) -> str:
     now = datetime.now(KST)
-    heading = f"# {kind.title()} Paper Radar — {now:%Y-%m-%d}"
+    heading = f"📝 {kind.title()} Paper Radar — {now:%Y-%m-%d}"
     lines = [
         heading,
         "",
@@ -53,7 +53,7 @@ def render_digest(kind: str, rows: list[dict], stats: dict[str, int]) -> str:
         )
         lines.extend(
             [
-                f"## {index}. [{row['title']}]({row['primary_url']})",
+                f"> {index}. [{row['title']}]({row['primary_url']})",
                 "",
                 f"Score: **{row['score']:.1f}**" + (f" · {tag_line}" if tag_line else ""),
             ]
@@ -99,11 +99,11 @@ def render_trend_report(kind: str, rows: list[dict], days: int) -> str:
     now = datetime.now(KST)
     tag_counts, pair_counts = trend_counts(rows)
     lines = [
-        f"# {kind.title()} Trend Map — {now:%Y-%m-%d}",
+        f"🗺️ {kind.title()} Trend Map — {now:%Y-%m-%d}",
         "",
         f"Window: last {days} days · Unique papers: {len(rows)}",
         "",
-        "## Repeated combinations",
+        "> Repeated combinations",
         "",
     ]
     repeated = [(name, count) for name, count in pair_counts.most_common(15) if count >= 2]
@@ -111,9 +111,9 @@ def render_trend_report(kind: str, rows: list[dict], days: int) -> str:
         lines.extend(f"- {name}: {count} papers" for name, count in repeated)
     else:
         lines.append("- No combination has repeated at least twice yet.")
-    lines.extend(["", "## Frequent tags", ""])
+    lines.extend(["", "> Frequent tags", ""])
     lines.extend(f"- {name}: {count}" for name, count in tag_counts.most_common(15))
-    lines.extend(["", "## Strong papers", ""])
+    lines.extend(["", "> Strong papers", ""])
     for row in rows[:10]:
         lines.append(f"- [{row['title']}]({row['primary_url']}) — score {row['score']:.1f}")
     return "\n".join(lines).strip() + "\n"
