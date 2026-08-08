@@ -1,0 +1,12 @@
+[Unit]
+Description=Run Paper Radar daily
+
+[Timer]
+OnCalendar=*-*-* 06:30:00 Asia/Seoul
+Persistent=true
+RandomizedDelaySec=5min
+Unit=paper-radar@daily.service
+
+[Install]
+WantedBy=timers.target
+

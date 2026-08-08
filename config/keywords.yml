@@ -1,0 +1,143 @@
+methods:
+  marl:
+    weight: 14
+    terms:
+      - multi-agent reinforcement learning
+      - multi agent reinforcement learning
+      - MARL
+      - MAPPO
+      - QMIX
+  reinforcement_learning:
+    weight: 8
+    terms:
+      - reinforcement learning
+      - deep reinforcement learning
+  generative_control:
+    weight: 12
+    terms:
+      - diffusion policy
+      - generative policy
+      - world model
+      - diffusion model
+  physical_ai:
+    weight: 14
+    terms:
+      - vision-language-action
+      - vision language action
+      - physical AI
+      - foundation model
+  graph:
+    weight: 10
+    terms:
+      - graph neural network
+      - graph reinforcement learning
+      - GNN
+  quantum_ai:
+    weight: 9
+    terms:
+      - quantum machine learning
+      - quantum reinforcement learning
+      - quantum federated learning
+      - QML
+      - QRL
+      - QFL
+
+domains:
+  sagin:
+    weight: 18
+    terms:
+      - space-air-ground integrated network
+      - space air ground integrated network
+      - SAGIN
+      - space-air-ground-sea integrated network
+  ntn_satellite:
+    weight: 18
+    terms:
+      - non-terrestrial network
+      - non terrestrial network
+      - NTN
+      - LEO satellite
+      - satellite network
+      - satellite edge computing
+  aerial_edge:
+    weight: 16
+    terms:
+      - UAV MEC
+      - UAV edge computing
+      - unmanned aerial vehicle
+      - urban air mobility
+      - UAM
+  reliable_network:
+    weight: 16
+    terms:
+      - integrated sensing and communication
+      - integrated sensing communication and computation
+      - integrated sensing, communication, and computation
+      - ISCC
+      - URLLC
+      - ultra-reliable low-latency communication
+  digital_twin:
+    weight: 10
+    terms:
+      - digital twin
+      - metaverse
+  edge_systems:
+    weight: 10
+    terms:
+      - mobile edge computing
+      - multi-access edge computing
+      - edge intelligence
+      - edge caching
+
+tasks:
+  routing:
+    weight: 6
+    terms: [routing, route optimization]
+  handover:
+    weight: 6
+    terms: [handover, handoff]
+  resource_allocation:
+    weight: 6
+    terms: [resource allocation, resource management]
+  trajectory:
+    weight: 6
+    terms: [trajectory control, trajectory optimization, trajectory planning]
+  offloading:
+    weight: 6
+    terms: [computation offloading, task offloading]
+  caching:
+    weight: 5
+    terms: [edge caching, content caching]
+  scheduling:
+    weight: 5
+    terms: [scheduling, airport scheduling]
+  surveillance:
+    weight: 5
+    terms: [surveillance, target tracking]
+
+queries:
+  daily:
+    - '"space-air-ground integrated network" reinforcement learning'
+    - 'SAGIN graph neural network routing'
+    - '"non-terrestrial network" reinforcement learning handover'
+    - 'LEO satellite graph neural network routing'
+    - 'UAV edge computing reinforcement learning offloading'
+    - 'UAV diffusion trajectory control'
+    - '"integrated sensing communication and computation" learning'
+    - '"vision-language-action" efficient edge robotics'
+  weekly:
+    - 'multi-agent reinforcement learning satellite network'
+    - 'world model robotics trajectory control'
+    - 'diffusion policy multi-agent trajectory'
+    - 'digital twin 6G reinforcement learning'
+    - 'quantum reinforcement learning resource allocation'
+    - 'airport scheduling reinforcement learning'
+
+scoring:
+  minimum_relevant: 20
+  title_multiplier: 1.35
+  cross_axis_bonus: 12
+  code_bonus: 8
+  survey_bonus: 6
+  max_score: 100
+
