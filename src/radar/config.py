@@ -19,6 +19,10 @@ class Settings:
     openai_model: str
     contact_email: str | None
     user_agent: str
+    semantic_scholar_api_key: str | None = None
+    ieee_xplore_api_key: str | None = None
+    openreview_token: str | None = None
+    huggingface_token: str | None = None
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -32,6 +36,10 @@ class Settings:
             openai_model=os.getenv("OPENAI_MODEL", "gpt-5.6"),
             contact_email=os.getenv("CONTACT_EMAIL") or None,
             user_agent=os.getenv("RADAR_USER_AGENT", "paper-radar/0.1"),
+            semantic_scholar_api_key=os.getenv("SEMANTIC_SCHOLAR_API_KEY") or None,
+            ieee_xplore_api_key=os.getenv("IEEE_XPLORE_API_KEY") or None,
+            openreview_token=os.getenv("OPENREVIEW_TOKEN") or None,
+            huggingface_token=os.getenv("HF_TOKEN") or None,
         )
 
 

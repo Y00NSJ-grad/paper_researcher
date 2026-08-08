@@ -7,7 +7,11 @@ from typing import Any
 
 from radar.collectors.arxiv import ArxivCollector
 from radar.collectors.base import Collector
+from radar.collectors.huggingface import HuggingFaceCollector
+from radar.collectors.ieee_xplore import IeeeXploreCollector
 from radar.collectors.openalex import OpenAlexCollector
+from radar.collectors.openreview import OpenReviewCollector
+from radar.collectors.semantic_scholar import SemanticScholarCollector
 from radar.config import Settings, load_config
 from radar.delivery import SlackWebhookDelivery
 from radar.models import PaperCandidate
@@ -29,14 +33,26 @@ class RadarRunner:
         self.config = load_config(settings.config_path)
         self.store = PaperStore(settings.db_path)
         self.store.initialize()
-        self.collectors = collectors or [
-            ArxivCollector(settings.user_agent),
-            OpenAlexCollector(
-                settings.openalex_api_key,
-                settings.contact_email,
-                settings.user_agent,
-            ),
-        ]
+        if collectors is not None:
+            self.collectors = collectors
+        else:
+            self.collectors = [
+                ArxivCollector(settings.user_agent),
+                OpenAlexCollector(
+                    settings.openalex_api_key,
+                    settings.contact_email,
+                    settings.user_agent,
+                ),
+                SemanticScholarCollector(
+                    settings.semantic_scholar_api_key, settings.user_agent
+                ),
+                OpenReviewCollector(settings.user_agent, settings.openreview_token),
+                HuggingFaceCollector(settings.user_agent, settings.huggingface_token),
+            ]
+            if settings.ieee_xplore_api_key:
+                self.collectors.append(
+                    IeeeXploreCollector(settings.ieee_xplore_api_key, settings.user_agent)
+                )
 
     def collect_and_report(
         self,

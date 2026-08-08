@@ -1,6 +1,6 @@
 # Paper Radar
 
-개인 연구 관심사에 맞춰 arXiv와 OpenAlex에서 논문을 수집하고, 중복 제거와 점수화를
+개인 연구 관심사에 맞춰 여러 학술 소스에서 논문을 수집하고, 중복 제거와 점수화를
 거쳐 Markdown 및 Slack으로 전달하는 연구 트렌드 파이프라인입니다.
 
 Ubuntu에서는 다음 구조로 직접 실행합니다.
@@ -13,7 +13,9 @@ systemd user timer → Python virtualenv → SQLite → Markdown/Slack
 
 ## 기능
 
-- arXiv 및 OpenAlex 최근 논문 검색
+- arXiv, OpenAlex, Semantic Scholar, OpenReview 최근 논문 검색
+- Hugging Face Daily Papers 수집
+- IEEE Xplore의 JSAC, TMC, TIV, ToN, TVT 최신 논문 검색
 - DOI, arXiv ID, 제목·첫 저자·연도 기반 중복 제거
 - 방법론 × 도메인 × 과업 태깅 및 설명 가능한 점수
 - OpenAI Responses API 기반 선택적 여섯 필드 요약
@@ -84,6 +86,10 @@ CONTACT_EMAIL=researcher@example.com
 SLACK_WEBHOOK_URL=
 
 OPENALEX_API_KEY=
+SEMANTIC_SCHOLAR_API_KEY=
+IEEE_XPLORE_API_KEY=
+OPENREVIEW_TOKEN=
+HF_TOKEN=
 
 OPENAI_API_KEY=
 OPENAI_MODEL=
@@ -96,6 +102,10 @@ RADAR_CONFIG_PATH=config/keywords.yml
 
 Slack을 사용하면 `SLACK_WEBHOOK_URL`을 입력합니다. OpenAI 요약을 사용하지 않으면
 `OPENAI_API_KEY`와 `OPENAI_MODEL`을 비워둡니다.
+
+Semantic Scholar, OpenReview, Hugging Face 공개 데이터는 토큰 없이도 조회할 수
+있습니다. 더 높은 호출 한도나 비공개 데이터가 필요할 때 각 토큰을 설정합니다.
+IEEE Xplore 수집기는 발급받은 `IEEE_XPLORE_API_KEY`가 있을 때만 활성화됩니다.
 
 ### 6. 환경변수 적용
 
@@ -221,7 +231,6 @@ OpenAI API key가 비어 있다면 `--summarize` 값과 관계없이 OpenAI 호�
 
 ## 아직 구현하지 않은 기능
 
-- Semantic Scholar, IEEE Xplore, OpenReview, Hugging Face 수집기
 - Slack Socket Mode 기반 Keep/Maybe/Reject 피드백
 - preprint와 최종 출판본의 fuzzy 병합 검토 큐
 - 서로 다른 연구실 수와 4주/12주 증가율 기반 Trend 승격

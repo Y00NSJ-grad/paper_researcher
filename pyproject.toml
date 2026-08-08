@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "paper-radar"
 version = "0.1.0"
-description = "Personal research trend radar for arXiv, OpenAlex, Slack, and GPT summaries"
+description = "Personal research trend radar with multi-source scholarly metadata collection"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
