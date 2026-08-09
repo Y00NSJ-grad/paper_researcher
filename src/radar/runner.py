@@ -43,9 +43,7 @@ class RadarRunner:
                     settings.contact_email,
                     settings.user_agent,
                 ),
-                SemanticScholarCollector(
-                    settings.semantic_scholar_api_key, settings.user_agent
-                ),
+                SemanticScholarCollector(settings.semantic_scholar_api_key, settings.user_agent),
                 OpenReviewCollector(settings.user_agent, settings.openreview_token),
                 HuggingFaceCollector(settings.user_agent, settings.huggingface_token),
             ]
@@ -94,17 +92,26 @@ class RadarRunner:
                         continue
                     stats["collected"] += len(candidates)
                     for candidate in candidates:
-                        candidate.query_ids.append(query_id)
-                        scored = score_paper(candidate, self.config)
-                        minimum = float(
-                            self.config.get("scoring", {}).get("minimum_relevant", 20)
-                        )
-                        if scored.score < minimum:
-                            continue
-                        paper_id, created = self.store.upsert_scored(scored, run_id)
-                        relevant_ids.add(paper_id)
-                        if created:
-                            new_ids.add(paper_id)
+                        try:
+                            candidate.query_ids.append(query_id)
+                            scored = score_paper(candidate, self.config)
+                            minimum = float(
+                                self.config.get("scoring", {}).get("minimum_relevant", 20)
+                            )
+                            if scored.score < minimum:
+                                continue
+                            paper_id, created = self.store.upsert_scored(scored, run_id)
+                            relevant_ids.add(paper_id)
+                            if created:
+                                new_ids.add(paper_id)
+                        except Exception as exc:
+                            stats["source_errors"] += 1
+                            message = (
+                                f"{collector.name} candidate failed "
+                                f"({candidate.source_id!r}): {exc}"
+                            )
+                            logger.exception(message)
+                            errors.append(message)
 
             stats["relevant"] = len(relevant_ids)
             stats["new"] = len(new_ids)

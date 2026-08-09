@@ -10,6 +10,22 @@ from radar.models import PaperCandidate
 from radar.text import normalize_arxiv_id, normalize_doi
 
 
+def _author_names(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    names: list[str] = []
+    for author in value:
+        if isinstance(author, str):
+            name = author
+        elif isinstance(author, dict):
+            name = author.get("fullname") or author.get("name") or author.get("username") or ""
+        else:
+            name = str(author)
+        if name:
+            names.append(name)
+    return names
+
+
 class OpenReviewCollector:
     name = "openreview"
     endpoint = "https://api2.openreview.net/notes/search"
@@ -34,9 +50,7 @@ class OpenReviewCollector:
         results: list[PaperCandidate] = []
         for note in response.json().get("notes", []):
             updated = parse_datetime(note.get("tmdate") or note.get("mdate"))
-            published = parse_datetime(
-                note.get("pdate") or note.get("cdate") or note.get("tcdate")
-            )
+            published = parse_datetime(note.get("pdate") or note.get("cdate") or note.get("tcdate"))
             if (published or updated) and (published or updated) < since:
                 continue
             content: dict[str, Any] = note.get("content") or {}
@@ -53,7 +67,7 @@ class OpenReviewCollector:
                     arxiv_id=arxiv_id,
                     title=content_value(content, "title", "") or "",
                     abstract=content_value(content, "abstract"),
-                    authors=list(content_value(content, "authors", []) or []),
+                    authors=_author_names(content_value(content, "authors", [])),
                     published_at=published,
                     updated_at=updated,
                     venue=venue,

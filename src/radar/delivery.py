@@ -22,19 +22,22 @@ class SlackWebhookDelivery:
         slack_text = markdown_to_slack(content)
         chunks = _chunks(slack_text, 2800)
         for chunk in chunks:
-            response = self.client.post(
-                self.webhook_url,
-                json={
-                    "text": chunk[:500],
-                    "blocks": [
-                        {
-                            "type": "section",
-                            "text": {"type": "mrkdwn", "text": chunk},
-                        }
-                    ],
-                },
-            )
-            response.raise_for_status()
+            try:
+                response = self.client.post(
+                    self.webhook_url,
+                    json={
+                        "text": chunk[:500],
+                        "blocks": [
+                            {
+                                "type": "section",
+                                "text": {"type": "mrkdwn", "text": chunk},
+                            }
+                        ],
+                    },
+                )
+                response.raise_for_status()
+            except httpx.HTTPError:
+                raise RuntimeError("Slack webhook delivery failed") from None
 
 
 def _chunks(value: str, size: int) -> list[str]:
@@ -55,4 +58,3 @@ def _chunks(value: str, size: int) -> list[str]:
     if current:
         chunks.append(current)
     return chunks or [value[:size]]
-

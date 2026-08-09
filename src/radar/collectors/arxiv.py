@@ -37,12 +37,20 @@ class ArxivCollector:
     name = "arxiv"
     endpoint = "https://export.arxiv.org/api/query"
 
-    def __init__(self, user_agent: str, min_interval_seconds: float = 3.1):
+    def __init__(
+        self,
+        user_agent: str,
+        min_interval_seconds: float = 3.1,
+        max_attempts: int = 3,
+        backoff_base_seconds: float = 5.0,
+    ):
         self.client = httpx.Client(
             timeout=30,
             headers={"User-Agent": user_agent, "Accept": "application/atom+xml"},
         )
         self.min_interval_seconds = min_interval_seconds
+        self.max_attempts = max_attempts
+        self.backoff_base_seconds = backoff_base_seconds
         self._last_request_at = 0.0
 
     def _respect_rate_limit(self) -> None:
@@ -50,16 +58,43 @@ class ArxivCollector:
         if elapsed < self.min_interval_seconds:
             time.sleep(self.min_interval_seconds - elapsed)
 
+    def _get_with_retry(self, url: str) -> httpx.Response:
+        for attempt in range(self.max_attempts):
+            self._respect_rate_limit()
+            try:
+                response = self.client.get(url)
+            except httpx.TimeoutException:
+                self._last_request_at = time.monotonic()
+                if attempt + 1 >= self.max_attempts:
+                    raise
+                time.sleep(self.backoff_base_seconds * (2**attempt))
+                continue
+
+            self._last_request_at = time.monotonic()
+            retryable = response.status_code == 429 or response.status_code >= 500
+            if not retryable:
+                response.raise_for_status()
+                return response
+            if attempt + 1 >= self.max_attempts:
+                response.raise_for_status()
+
+            retry_after = response.headers.get("Retry-After")
+            try:
+                retry_delay = float(retry_after) if retry_after else 0.0
+            except ValueError:
+                retry_delay = 0.0
+            backoff = self.backoff_base_seconds * (2**attempt)
+            time.sleep(max(retry_delay, backoff))
+
+        raise RuntimeError("arXiv retry loop exhausted")
+
     def search(self, query: str, since: datetime, limit: int = 25) -> list[PaperCandidate]:
-        self._respect_rate_limit()
         expression = _arxiv_expression(query)
         url = (
             f"{self.endpoint}?search_query={quote_plus(expression)}"
             f"&start=0&max_results={limit}&sortBy=submittedDate&sortOrder=descending"
         )
-        response = self.client.get(url)
-        self._last_request_at = time.monotonic()
-        response.raise_for_status()
+        response = self._get_with_retry(url)
         root = ET.fromstring(response.text)
         results: list[PaperCandidate] = []
         for entry in root.findall(f"{ATOM}entry"):

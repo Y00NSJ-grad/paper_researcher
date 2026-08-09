@@ -6,6 +6,7 @@ from pathlib import Path
 
 import httpx
 
+from radar.collectors.arxiv import ArxivCollector
 from radar.collectors.huggingface import HuggingFaceCollector
 from radar.collectors.ieee_xplore import (
     IEEE_JOURNALS,
@@ -24,6 +25,30 @@ def client_with(handler):
 
 
 class CollectorTest(unittest.TestCase):
+    def test_arxiv_retries_rate_limit_response(self):
+        calls = 0
+
+        def handler(request):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return httpx.Response(429, headers={"Retry-After": "0"})
+            return httpx.Response(
+                200,
+                text='<feed xmlns="http://www.w3.org/2005/Atom"></feed>',
+            )
+
+        collector = ArxivCollector(
+            "test-agent",
+            min_interval_seconds=0,
+            max_attempts=3,
+            backoff_base_seconds=0,
+        )
+        collector.client = client_with(handler)
+        papers = collector.search("network learning", SINCE)
+        self.assertEqual(papers, [])
+        self.assertEqual(calls, 2)
+
     def test_semantic_scholar_maps_metadata_and_date_filter(self):
         def handler(request):
             self.assertEqual(request.url.params["sort"], "publicationDate:desc")
@@ -77,9 +102,7 @@ class CollectorTest(unittest.TestCase):
             )
 
         with tempfile.TemporaryDirectory() as directory:
-            collector = IeeeXploreCollector(
-                "ieee-key", "test-agent", Path(directory) / "quota.db"
-            )
+            collector = IeeeXploreCollector("ieee-key", "test-agent", Path(directory) / "quota.db")
             collector.client = client_with(handler)
             papers = collector.search("network learning", SINCE, 25)
         self.assertEqual(set(requested_venues), set(IEEE_JOURNALS.values()))
@@ -108,8 +131,7 @@ class CollectorTest(unittest.TestCase):
             self.assertTrue(all(delay >= 0.109999 for delay in sleeps))
             with sqlite3.connect(db_path) as connection:
                 row = connection.execute(
-                    "SELECT quota_day, call_count FROM api_rate_limits "
-                    "WHERE source = ?",
+                    "SELECT quota_day, call_count FROM api_rate_limits WHERE source = ?",
                     ("ieee_xplore",),
                 ).fetchone()
             self.assertEqual(row, ("2026-08-09", 200))
@@ -134,9 +156,7 @@ class CollectorTest(unittest.TestCase):
             return httpx.Response(200, json={"articles": []})
 
         with tempfile.TemporaryDirectory() as directory:
-            collector = IeeeXploreCollector(
-                "ieee-key", "test-agent", Path(directory) / "quota.db"
-            )
+            collector = IeeeXploreCollector("ieee-key", "test-agent", Path(directory) / "quota.db")
             collector.api_guard = ExhaustedGuard()
             collector.client = client_with(handler)
             with self.assertRaises(IeeeQuotaExceeded):
@@ -160,7 +180,9 @@ class CollectorTest(unittest.TestCase):
                             "content": {
                                 "title": {"value": "An Open Paper"},
                                 "abstract": {"value": "Network learning"},
-                                "authors": {"value": ["O. Author"]},
+                                "authors": {
+                                    "value": [{"fullname": "O. Author", "username": "~openreview1"}]
+                                },
                                 "venue": {"value": "ICLR 2027"},
                                 "pdf": {"value": "/pdf/note-1.pdf"},
                             },
@@ -174,6 +196,7 @@ class CollectorTest(unittest.TestCase):
         paper = collector.search("network learning", SINCE)[0]
         self.assertEqual(paper.source_id, "forum-1")
         self.assertEqual(paper.title, "An Open Paper")
+        self.assertEqual(paper.authors, ["O. Author"])
         self.assertEqual(paper.pdf_url, "https://openreview.net/pdf/note-1.pdf")
 
     def test_huggingface_reuses_daily_feed_across_queries(self):
@@ -206,6 +229,22 @@ class CollectorTest(unittest.TestCase):
         self.assertEqual(calls, 1)
         self.assertEqual(first[0].arxiv_id, "2608.00001")
         self.assertEqual(second[0].code_url, "https://github.com/example/code")
+
+    def test_huggingface_retries_once_then_suppresses_same_failed_date(self):
+        calls = 0
+
+        def handler(request):
+            nonlocal calls
+            calls += 1
+            return httpx.Response(400, json={"error": "feed not ready"})
+
+        collector = HuggingFaceCollector("test-agent", max_attempts=3, backoff_base_seconds=0)
+        collector.client = client_with(handler)
+        since = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+        with self.assertRaises(httpx.HTTPStatusError):
+            collector.search("network learning", since)
+        self.assertEqual(collector.search("graph methods", since), [])
+        self.assertEqual(calls, 3)
 
 
 if __name__ == "__main__":

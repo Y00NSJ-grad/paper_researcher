@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import time
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -24,12 +25,21 @@ class HuggingFaceCollector:
     name = "huggingface"
     endpoint = "https://huggingface.co/api/daily_papers"
 
-    def __init__(self, user_agent: str, token: str | None = None):
+    def __init__(
+        self,
+        user_agent: str,
+        token: str | None = None,
+        max_attempts: int = 3,
+        backoff_base_seconds: float = 0.5,
+    ):
         headers = {"User-Agent": user_agent}
         if token:
             headers["Authorization"] = f"Bearer {token}"
         self.client = httpx.Client(timeout=30, headers=headers)
+        self.max_attempts = max_attempts
+        self.backoff_base_seconds = backoff_base_seconds
         self._feed_cache: dict[str, list[dict[str, Any]]] = {}
+        self._failed_dates: set[str] = set()
 
     def search(self, query: str, since: datetime, limit: int = 25) -> list[PaperCandidate]:
         terms = [term.lower() for term in _query_terms(query)]
@@ -54,15 +64,36 @@ class HuggingFaceCollector:
         return results[:limit]
 
     def _daily_feed(self, date_key: str) -> list[dict[str, Any]]:
-        if date_key not in self._feed_cache:
-            response = self.client.get(
-                self.endpoint,
-                params={"date": date_key, "limit": 100, "sort": "publishedAt"},
-            )
-            response.raise_for_status()
-            data = response.json()
-            self._feed_cache[date_key] = data if isinstance(data, list) else data.get("items", [])
-        return self._feed_cache[date_key]
+        if date_key in self._feed_cache:
+            return self._feed_cache[date_key]
+        if date_key in self._failed_dates:
+            return []
+
+        for attempt in range(self.max_attempts):
+            try:
+                response = self.client.get(
+                    self.endpoint,
+                    params={"date": date_key, "limit": 100, "sort": "publishedAt"},
+                )
+            except httpx.TimeoutException:
+                if attempt + 1 >= self.max_attempts:
+                    self._failed_dates.add(date_key)
+                    raise
+            else:
+                retryable = response.status_code in {400, 429} or response.status_code >= 500
+                if not retryable:
+                    response.raise_for_status()
+                    data = response.json()
+                    items = data if isinstance(data, list) else data.get("items", [])
+                    self._feed_cache[date_key] = items
+                    return items
+                if attempt + 1 >= self.max_attempts:
+                    self._failed_dates.add(date_key)
+                    response.raise_for_status()
+
+            time.sleep(self.backoff_base_seconds * (2**attempt))
+
+        return []
 
     def _candidate(self, row: dict[str, Any]) -> PaperCandidate:
         paper = row.get("paper") or row
