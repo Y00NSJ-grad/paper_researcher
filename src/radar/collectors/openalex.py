@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from datetime import UTC, datetime
 
 import httpx
@@ -27,10 +28,57 @@ class OpenAlexCollector:
     name = "openalex"
     endpoint = "https://api.openalex.org/works"
 
-    def __init__(self, api_key: str | None, email: str | None, user_agent: str):
+    def __init__(
+        self,
+        api_key: str | None,
+        email: str | None,
+        user_agent: str,
+        min_interval_seconds: float = 0.25,
+        max_attempts: int = 3,
+        backoff_base_seconds: float = 1.0,
+    ):
         self.api_key = api_key
         self.email = email
         self.client = httpx.Client(timeout=30, headers={"User-Agent": user_agent})
+        self.min_interval_seconds = min_interval_seconds
+        self.max_attempts = max_attempts
+        self.backoff_base_seconds = backoff_base_seconds
+        self._last_request_at = 0.0
+
+    def _respect_rate_limit(self) -> None:
+        elapsed = time.monotonic() - self._last_request_at
+        if elapsed < self.min_interval_seconds:
+            time.sleep(self.min_interval_seconds - elapsed)
+
+    def _get_with_retry(self, params: dict[str, str | int]) -> httpx.Response:
+        for attempt in range(self.max_attempts):
+            self._respect_rate_limit()
+            try:
+                response = self.client.get(self.endpoint, params=params)
+            except httpx.TimeoutException:
+                self._last_request_at = time.monotonic()
+                if attempt + 1 >= self.max_attempts:
+                    raise
+            else:
+                self._last_request_at = time.monotonic()
+                retryable = response.status_code == 429 or response.status_code >= 500
+                if not retryable:
+                    response.raise_for_status()
+                    return response
+                if attempt + 1 >= self.max_attempts:
+                    response.raise_for_status()
+
+                retry_after = response.headers.get("Retry-After")
+                try:
+                    retry_delay = float(retry_after) if retry_after else 0.0
+                except ValueError:
+                    retry_delay = 0.0
+                time.sleep(max(retry_delay, self.backoff_base_seconds * (2**attempt)))
+                continue
+
+            time.sleep(self.backoff_base_seconds * (2**attempt))
+
+        raise RuntimeError("OpenAlex retry loop exhausted")
 
     def search(self, query: str, since: datetime, limit: int = 25) -> list[PaperCandidate]:
         params: dict[str, str | int] = {
@@ -47,17 +95,14 @@ class OpenAlexCollector:
             params["api_key"] = self.api_key
         if self.email:
             params["mailto"] = self.email
-        response = self.client.get(self.endpoint, params=params)
-        response.raise_for_status()
+        response = self._get_with_retry(params)
         results: list[PaperCandidate] = []
         for work in response.json().get("results", []):
             ids = work.get("ids") or {}
             location = work.get("primary_location") or {}
             source = location.get("source") or {}
             authorships = work.get("authorships") or []
-            authors = [
-                item.get("author", {}).get("display_name", "") for item in authorships
-            ]
+            authors = [item.get("author", {}).get("display_name", "") for item in authorships]
             affiliations = sorted(
                 {
                     institution.get("display_name", "")
@@ -89,4 +134,3 @@ class OpenAlexCollector:
                 )
             )
         return results
-

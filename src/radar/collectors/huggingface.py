@@ -89,6 +89,12 @@ class HuggingFaceCollector:
                     return items
                 if attempt + 1 >= self.max_attempts:
                     self._failed_dates.add(date_key)
+                    if (
+                        response.status_code == 400
+                        and date_key == datetime.now(UTC).date().isoformat()
+                    ):
+                        self._feed_cache[date_key] = []
+                        return []
                     response.raise_for_status()
 
             time.sleep(self.backoff_base_seconds * (2**attempt))

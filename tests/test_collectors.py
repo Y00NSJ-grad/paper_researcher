@@ -14,6 +14,7 @@ from radar.collectors.ieee_xplore import (
     IeeeQuotaExceeded,
     IeeeXploreCollector,
 )
+from radar.collectors.openalex import OpenAlexCollector
 from radar.collectors.openreview import OpenReviewCollector
 from radar.collectors.semantic_scholar import SemanticScholarCollector
 
@@ -50,8 +51,14 @@ class CollectorTest(unittest.TestCase):
         self.assertEqual(calls, 2)
 
     def test_semantic_scholar_maps_metadata_and_date_filter(self):
+        calls = 0
+
         def handler(request):
+            nonlocal calls
+            calls += 1
             self.assertEqual(request.url.params["sort"], "publicationDate:desc")
+            if calls == 1:
+                return httpx.Response(429, headers={"Retry-After": "0"})
             return httpx.Response(
                 200,
                 json={
@@ -71,12 +78,39 @@ class CollectorTest(unittest.TestCase):
                 },
             )
 
-        collector = SemanticScholarCollector("s2-key", "test-agent")
+        collector = SemanticScholarCollector(
+            "s2-key",
+            "test-agent",
+            min_interval_seconds=0,
+            backoff_base_seconds=0,
+        )
         collector.client = client_with(handler)
         papers = collector.search("network-learning", SINCE, 10)
+        self.assertEqual(calls, 2)
         self.assertEqual(papers[0].source_id, "s2-1")
         self.assertEqual(papers[0].doi, "10.1/test")
         self.assertEqual(papers[0].arxiv_id, "2608.1")
+
+    def test_openalex_retries_rate_limit_response(self):
+        calls = 0
+
+        def handler(request):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return httpx.Response(429, headers={"Retry-After": "0"})
+            return httpx.Response(200, json={"results": []})
+
+        collector = OpenAlexCollector(
+            None,
+            None,
+            "test-agent",
+            min_interval_seconds=0,
+            backoff_base_seconds=0,
+        )
+        collector.client = client_with(handler)
+        self.assertEqual(collector.search("network learning", SINCE), [])
+        self.assertEqual(calls, 2)
 
     def test_ieee_queries_all_tracked_journals(self):
         requested_venues = []
@@ -230,7 +264,7 @@ class CollectorTest(unittest.TestCase):
         self.assertEqual(first[0].arxiv_id, "2608.00001")
         self.assertEqual(second[0].code_url, "https://github.com/example/code")
 
-    def test_huggingface_retries_once_then_suppresses_same_failed_date(self):
+    def test_huggingface_treats_current_date_400_as_feed_not_ready(self):
         calls = 0
 
         def handler(request):
@@ -241,10 +275,18 @@ class CollectorTest(unittest.TestCase):
         collector = HuggingFaceCollector("test-agent", max_attempts=3, backoff_base_seconds=0)
         collector.client = client_with(handler)
         since = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
-        with self.assertRaises(httpx.HTTPStatusError):
-            collector.search("network learning", since)
+        self.assertEqual(collector.search("network learning", since), [])
         self.assertEqual(collector.search("graph methods", since), [])
         self.assertEqual(calls, 3)
+
+    def test_huggingface_historical_date_400_remains_an_error(self):
+        def handler(request):
+            return httpx.Response(400, json={"error": "invalid historical date"})
+
+        collector = HuggingFaceCollector("test-agent", max_attempts=1)
+        collector.client = client_with(handler)
+        with self.assertRaises(httpx.HTTPStatusError):
+            collector.search("network learning", SINCE)
 
 
 if __name__ == "__main__":
