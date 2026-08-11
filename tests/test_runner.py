@@ -3,6 +3,8 @@ import unittest
 from datetime import UTC, datetime
 from pathlib import Path
 
+import httpx
+
 from radar.config import Settings
 from radar.models import PaperCandidate
 from radar.runner import RadarRunner
@@ -57,6 +59,15 @@ class MixedCandidateCollector:
         ]
 
 
+class HttpFailureCollector:
+    name = "protected_source"
+
+    def search(self, query: str, since: datetime, limit: int = 25) -> list[PaperCandidate]:
+        request = httpx.Request("GET", "https://example.test/search?apikey=secret-value")
+        response = httpx.Response(403, request=request)
+        raise httpx.HTTPStatusError("request failed", request=request, response=response)
+
+
 class RunnerTest(unittest.TestCase):
     def test_daily_pipeline_writes_deduplicated_report(self):
         project_root = Path(__file__).parents[1]
@@ -88,6 +99,20 @@ class RunnerTest(unittest.TestCase):
             self.assertIn("Relevant: 1", content)
             self.assertEqual(content.count("> 1."), 1)
             self.assertEqual(len(runner.store.papers_for_run(1)), 1)
+
+            second_report = runner.collect_and_report(
+                kind="daily",
+                since_hours=48,
+                top_n=10,
+                summarize_n=3,
+                dry_run=True,
+                limit_per_query=5,
+            )
+            second_content = second_report.read_text(encoding="utf-8")
+            self.assertIn("Relevant: 1", second_content)
+            self.assertIn("New: 0", second_content)
+            self.assertNotIn("MARL Routing", second_content)
+            self.assertIn("No new relevant papers", second_content)
 
     def test_candidate_error_does_not_abort_report_delivery(self):
         project_root = Path(__file__).parents[1]
@@ -124,6 +149,59 @@ class RunnerTest(unittest.TestCase):
                     "SELECT status FROM pipeline_runs WHERE id = 1"
                 ).fetchone()["status"]
             self.assertEqual(status, "partial")
+
+    def test_http_source_error_does_not_store_or_log_request_secrets(self):
+        project_root = Path(__file__).parents[1]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            settings = Settings(
+                db_path=root / "papers.db",
+                output_dir=root / "outputs",
+                config_path=project_root / "config" / "keywords.yml",
+                slack_webhook_url=None,
+                openalex_api_key=None,
+                openai_api_key=None,
+                openai_model="test-model",
+                contact_email=None,
+                user_agent="paper-radar-test",
+            )
+            runner = RadarRunner(settings, collectors=[HttpFailureCollector()])
+            with self.assertLogs("radar.runner", level="ERROR") as logs:
+                runner.collect_and_report(
+                    kind="daily",
+                    since_hours=48,
+                    top_n=10,
+                    summarize_n=0,
+                    dry_run=True,
+                )
+
+            with runner.store.connect() as connection:
+                error = connection.execute(
+                    "SELECT error FROM pipeline_runs WHERE id = 1"
+                ).fetchone()["error"]
+            combined = "\n".join(logs.output) + "\n" + error
+            self.assertNotIn("secret-value", combined)
+            self.assertNotIn("apikey", combined)
+            self.assertIn("HTTP 403 Forbidden", combined)
+
+    def test_ieee_collector_is_disabled_without_explicit_enable_flag(self):
+        project_root = Path(__file__).parents[1]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            settings = Settings(
+                db_path=root / "papers.db",
+                output_dir=root / "outputs",
+                config_path=project_root / "config" / "keywords.yml",
+                slack_webhook_url=None,
+                openalex_api_key=None,
+                openai_api_key=None,
+                openai_model="test-model",
+                contact_email=None,
+                user_agent="paper-radar-test",
+                ieee_xplore_api_key="pending-key",
+            )
+            runner = RadarRunner(settings)
+            self.assertNotIn("ieee_xplore", [collector.name for collector in runner.collectors])
 
 
 if __name__ == "__main__":

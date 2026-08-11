@@ -5,6 +5,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+import httpx
+
 from radar.collectors.arxiv import ArxivCollector
 from radar.collectors.base import Collector
 from radar.collectors.huggingface import HuggingFaceCollector
@@ -21,6 +23,13 @@ from radar.storage import PaperStore
 from radar.summarizer import OpenAISummarizer
 
 logger = logging.getLogger(__name__)
+
+
+def _safe_error(exc: Exception) -> str:
+    if isinstance(exc, httpx.HTTPStatusError):
+        response = exc.response
+        return f"HTTP {response.status_code} {response.reason_phrase}".strip()
+    return str(exc)
 
 
 class RadarRunner:
@@ -47,7 +56,7 @@ class RadarRunner:
                 OpenReviewCollector(settings.user_agent, settings.openreview_token),
                 HuggingFaceCollector(settings.user_agent, settings.huggingface_token),
             ]
-            if settings.ieee_xplore_api_key:
+            if settings.ieee_xplore_enabled and settings.ieee_xplore_api_key:
                 self.collectors.append(
                     IeeeXploreCollector(
                         settings.ieee_xplore_api_key,
@@ -80,16 +89,33 @@ class RadarRunner:
 
         try:
             for collector in self.collectors:
-                for index, query in enumerate(queries):
-                    query_id = f"{kind}:{index}:{query}"
+                batch_search = getattr(collector, "search_many", None)
+                candidates_by_query: dict[str, list[PaperCandidate]] = {}
+                if callable(batch_search):
                     try:
-                        candidates = collector.search(query, since, limit_per_query)
-                    except Exception as exc:  # Continue when one source/query fails.
+                        candidates_by_query = batch_search(queries, since, limit_per_query)
+                    except Exception as exc:  # noqa: BLE001 - isolate one batch source.
                         stats["source_errors"] += 1
-                        message = f"{collector.name} query failed ({query!r}): {exc}"
-                        logger.exception(message)
+                        message = f"{collector.name} batch failed: {_safe_error(exc)}"
+                        logger.error(message)
                         errors.append(message)
                         continue
+
+                for index, query in enumerate(queries):
+                    query_id = f"{kind}:{index}:{query}"
+                    if callable(batch_search):
+                        candidates = candidates_by_query.get(query, [])
+                    else:
+                        try:
+                            candidates = collector.search(query, since, limit_per_query)
+                        except Exception as exc:  # noqa: BLE001 - isolate one source/query.
+                            stats["source_errors"] += 1
+                            message = (
+                                f"{collector.name} query failed ({query!r}): {_safe_error(exc)}"
+                            )
+                            logger.error(message)
+                            errors.append(message)
+                            continue
                     stats["collected"] += len(candidates)
                     for candidate in candidates:
                         try:
@@ -116,9 +142,16 @@ class RadarRunner:
             stats["relevant"] = len(relevant_ids)
             stats["new"] = len(new_ids)
 
-            rows = self.store.papers_for_run(run_id, limit=top_n)
+            row_limit = max(top_n, len(relevant_ids))
+            rows = self.store.papers_for_run(run_id, limit=row_limit)
+            if kind == "daily":
+                rows = [row for row in rows if int(row["id"]) in new_ids]
+            rows = rows[:top_n]
             self._summarize_rows(rows[:summarize_n])
-            rows = self.store.papers_for_run(run_id, limit=top_n)
+            refreshed = {
+                int(row["id"]): row for row in self.store.papers_for_run(run_id, row_limit)
+            }
+            rows = [refreshed[int(row["id"])] for row in rows]
             content = render_digest(kind, rows, stats)
             path = write_report(self.settings.output_dir, kind, content)
             self._deliver(content, dry_run)

@@ -43,7 +43,10 @@ def render_digest(kind: str, rows: list[dict], stats: dict[str, int]) -> str:
         "",
     ]
     if not rows:
-        lines.append("No relevant papers were found in this run.")
+        if kind == "daily" and stats.get("relevant", 0):
+            lines.append("No new relevant papers were found in this run.")
+        else:
+            lines.append("No relevant papers were found in this run.")
         return "\n".join(lines)
 
     for index, row in enumerate(rows, 1):
@@ -126,4 +129,3 @@ def write_report(output_dir: Path, kind: str, content: str) -> Path:
     path = directory / f"{now:%Y-%m-%d}.md"
     path.write_text(content, encoding="utf-8")
     return path
-

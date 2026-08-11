@@ -9,7 +9,7 @@ from urllib.parse import quote_plus
 import httpx
 
 from radar.models import PaperCandidate
-from radar.text import normalize_arxiv_id
+from radar.text import normalize_arxiv_id, normalize_title
 
 ATOM = "{http://www.w3.org/2005/Atom}"
 ARXIV = "{http://arxiv.org/schemas/atom}"
@@ -33,6 +33,12 @@ def _arxiv_expression(query: str) -> str:
     return " AND ".join(clauses)
 
 
+def _matches_query(candidate: PaperCandidate, query: str) -> bool:
+    haystack = normalize_title(f"{candidate.title} {candidate.abstract or ''}")
+    terms = re.findall(r'"([^"]+)"|([^\s]+)', query)
+    return all(normalize_title(phrase or token) in haystack for phrase, token in terms)
+
+
 class ArxivCollector:
     name = "arxiv"
     endpoint = "https://export.arxiv.org/api/query"
@@ -41,8 +47,8 @@ class ArxivCollector:
         self,
         user_agent: str,
         min_interval_seconds: float = 3.1,
-        max_attempts: int = 3,
-        backoff_base_seconds: float = 5.0,
+        max_attempts: int = 4,
+        backoff_base_seconds: float = 15.0,
     ):
         self.client = httpx.Client(
             timeout=30,
@@ -89,14 +95,25 @@ class ArxivCollector:
         raise RuntimeError("arXiv retry loop exhausted")
 
     def search(self, query: str, since: datetime, limit: int = 25) -> list[PaperCandidate]:
-        expression = _arxiv_expression(query)
+        return self.search_many([query], since, limit)[query]
+
+    def search_many(
+        self,
+        queries: list[str],
+        since: datetime,
+        limit: int = 25,
+    ) -> dict[str, list[PaperCandidate]]:
+        if not queries:
+            return {}
+        expression = " OR ".join(f"({_arxiv_expression(query)})" for query in queries)
+        combined_limit = min(limit * len(queries), 200)
         url = (
             f"{self.endpoint}?search_query={quote_plus(expression)}"
-            f"&start=0&max_results={limit}&sortBy=submittedDate&sortOrder=descending"
+            f"&start=0&max_results={combined_limit}&sortBy=submittedDate&sortOrder=descending"
         )
         response = self._get_with_retry(url)
         root = ET.fromstring(response.text)
-        results: list[PaperCandidate] = []
+        candidates: list[PaperCandidate] = []
         for entry in root.findall(f"{ATOM}entry"):
             published = _parse_datetime(entry.findtext(f"{ATOM}published"))
             if published and published < since:
@@ -108,7 +125,7 @@ class ArxivCollector:
                 for link in entry.findall(f"{ATOM}link")
             }
             doi = entry.findtext(f"{ARXIV}doi")
-            results.append(
+            candidates.append(
                 PaperCandidate(
                     source=self.name,
                     source_id=arxiv_id or source_url,
@@ -128,4 +145,9 @@ class ArxivCollector:
                     external_ids={"arxiv": arxiv_id or ""},
                 )
             )
+        results = {query: [] for query in queries}
+        for candidate in candidates:
+            for query in queries:
+                if len(results[query]) < limit and _matches_query(candidate, query):
+                    results[query].append(candidate)
         return results

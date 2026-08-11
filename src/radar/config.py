@@ -21,6 +21,7 @@ class Settings:
     user_agent: str
     semantic_scholar_api_key: str | None = None
     ieee_xplore_api_key: str | None = None
+    ieee_xplore_enabled: bool = False
     openreview_token: str | None = None
     huggingface_token: str | None = None
 
@@ -38,6 +39,8 @@ class Settings:
             user_agent=os.getenv("RADAR_USER_AGENT", "paper-radar/0.1"),
             semantic_scholar_api_key=os.getenv("SEMANTIC_SCHOLAR_API_KEY") or None,
             ieee_xplore_api_key=os.getenv("IEEE_XPLORE_API_KEY") or None,
+            ieee_xplore_enabled=os.getenv("IEEE_XPLORE_ENABLED", "false").lower()
+            in {"1", "true", "yes", "on"},
             openreview_token=os.getenv("OPENREVIEW_TOKEN") or None,
             huggingface_token=os.getenv("HF_TOKEN") or None,
         )

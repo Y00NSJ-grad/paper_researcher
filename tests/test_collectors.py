@@ -50,6 +50,49 @@ class CollectorTest(unittest.TestCase):
         self.assertEqual(papers, [])
         self.assertEqual(calls, 2)
 
+    def test_arxiv_batches_queries_and_routes_results_locally(self):
+        calls = 0
+
+        def handler(request):
+            nonlocal calls
+            calls += 1
+            self.assertIn(" OR ", request.url.params["search_query"])
+            return httpx.Response(
+                200,
+                text="""<feed xmlns="http://www.w3.org/2005/Atom">
+                  <entry>
+                    <id>https://arxiv.org/abs/2608.00001v1</id>
+                    <title>Network Learning for Satellite Routing</title>
+                    <summary>A network learning method.</summary>
+                    <published>2026-08-09T00:00:00+00:00</published>
+                    <updated>2026-08-09T00:00:00+00:00</updated>
+                    <author><name>A. Author</name></author>
+                  </entry>
+                  <entry>
+                    <id>https://arxiv.org/abs/2608.00002v1</id>
+                    <title>UAV Trajectory Control</title>
+                    <summary>Trajectory planning for an aerial robot.</summary>
+                    <published>2026-08-09T00:00:00+00:00</published>
+                    <updated>2026-08-09T00:00:00+00:00</updated>
+                    <author><name>B. Author</name></author>
+                  </entry>
+                </feed>""",
+            )
+
+        collector = ArxivCollector("test-agent", min_interval_seconds=0)
+        collector.client = client_with(handler)
+        results = collector.search_many(
+            ["network learning", '"UAV trajectory" control'],
+            SINCE,
+        )
+
+        self.assertEqual(calls, 1)
+        self.assertEqual([paper.arxiv_id for paper in results["network learning"]], ["2608.00001"])
+        self.assertEqual(
+            [paper.arxiv_id for paper in results['"UAV trajectory" control']],
+            ["2608.00002"],
+        )
+
     def test_semantic_scholar_maps_metadata_and_date_filter(self):
         calls = 0
 
