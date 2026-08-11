@@ -1,0 +1,276 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Paper Radar Dashboard</title>
+<link rel="stylesheet" href="/static/styles.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>📡</text></svg>">
+</head>
+<body>
+<div class="app viz-root">
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true">📡</span>
+      <div>
+        <h1>Paper Radar</h1>
+        <p class="brand-meta" id="brand-meta">로컬 전용 대시보드</p>
+      </div>
+    </div>
+    <div class="topbar-actions">
+      <button type="button" class="ghost" id="refresh">새로고침</button>
+      <button type="button" class="ghost" id="theme-toggle" aria-label="테마 전환">🌗</button>
+    </div>
+  </header>
+
+  <nav class="tabs" role="tablist" id="tabs">
+    <button role="tab" class="tab" data-view="overview" aria-selected="true">개요</button>
+    <button role="tab" class="tab" data-view="papers" aria-selected="false">논문</button>
+    <button role="tab" class="tab" data-view="queries" aria-selected="false">쿼리</button>
+    <button role="tab" class="tab" data-view="scoring" aria-selected="false">스코어링</button>
+    <button role="tab" class="tab" data-view="trends" aria-selected="false">트렌드 맵</button>
+    <button role="tab" class="tab" data-view="reports" aria-selected="false">리포트</button>
+  </nav>
+
+  <main>
+    <!-- 개요 -->
+    <section class="view" id="view-overview" role="tabpanel">
+      <div class="kpi-row" id="kpi-row"></div>
+      <div class="grid-2">
+        <section class="card">
+          <header class="card-head">
+            <h2>신규 논문 수집 추이</h2>
+            <p class="card-sub" id="timeline-sub">최근 30일 · 하루에 처음 수집된 논문 수</p>
+          </header>
+          <div class="chart" id="chart-intake"></div>
+        </section>
+        <section class="card">
+          <header class="card-head">
+            <h2>점수 분포</h2>
+            <p class="card-sub">저장된 전체 논문의 점수 구간별 편수</p>
+          </header>
+          <div class="chart" id="chart-histogram"></div>
+        </section>
+      </div>
+      <div class="grid-2">
+        <section class="card">
+          <header class="card-head">
+            <h2>소스별 수집량</h2>
+            <p class="card-sub">고유 논문 수 · 괄호는 저장된 버전 레코드 수</p>
+          </header>
+          <div class="chart" id="chart-sources"></div>
+        </section>
+        <section class="card">
+          <header class="card-head">
+            <h2>피드백 분류</h2>
+            <p class="card-sub" id="feedback-sub">논문 탭에서 기록한 판정</p>
+          </header>
+          <div class="chart" id="chart-feedback"></div>
+        </section>
+      </div>
+      <section class="card">
+        <header class="card-head">
+          <h2>실행별 수집·선별 결과</h2>
+          <p class="card-sub">최근 파이프라인 실행 순서대로</p>
+        </header>
+        <div class="chart" id="chart-runs"></div>
+      </section>
+      <section class="card">
+        <header class="card-head">
+          <h2>파이프라인 실행 기록</h2>
+          <p class="card-sub"><code>pipeline_runs</code> 테이블 · 최근 30건</p>
+        </header>
+        <div class="table-wrap" id="table-runs"></div>
+      </section>
+    </section>
+
+    <!-- 논문 -->
+    <section class="view" id="view-papers" role="tabpanel" hidden>
+      <div class="filters" id="paper-filters">
+        <label class="field grow">
+          <span>검색</span>
+          <input type="search" id="f-search" placeholder="제목 · 초록 · 학회">
+        </label>
+        <label class="field">
+          <span>소스</span>
+          <select id="f-source"><option value="">전체</option></select>
+        </label>
+        <label class="field">
+          <span>태그</span>
+          <select id="f-tag"><option value="">전체</option></select>
+        </label>
+        <label class="field">
+          <span>기간</span>
+          <select id="f-days">
+            <option value="0">전체</option>
+            <option value="7">최근 7일</option>
+            <option value="30">최근 30일</option>
+            <option value="90">최근 90일</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>최소 점수</span>
+          <input type="number" id="f-score" value="0" min="0" max="100" step="5">
+        </label>
+        <label class="field">
+          <span>피드백</span>
+          <select id="f-feedback">
+            <option value="">전체</option>
+            <option value="none">미기록</option>
+            <option value="keep">Keep</option>
+            <option value="maybe">Maybe</option>
+            <option value="reject">Reject</option>
+            <option value="read">Read</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>정렬</span>
+          <select id="f-sort">
+            <option value="score">점수</option>
+            <option value="first_seen">수집일</option>
+            <option value="published">발행일</option>
+            <option value="citations">인용수</option>
+          </select>
+        </label>
+      </div>
+      <div class="split">
+        <section class="card list-card">
+          <header class="card-head">
+            <h2>논문</h2>
+            <p class="card-sub" id="papers-count">불러오는 중…</p>
+          </header>
+          <div id="paper-list" class="paper-list"></div>
+          <div class="pager" id="paper-pager"></div>
+        </section>
+        <section class="card detail-card" id="paper-detail">
+          <p class="empty">왼쪽 목록에서 논문을 선택하면 점수 책정 과정이 표시됩니다.</p>
+        </section>
+      </div>
+    </section>
+
+    <!-- 쿼리 -->
+    <section class="view" id="view-queries" role="tabpanel" hidden>
+      <section class="card">
+        <header class="card-head">
+          <h2>쿼리별 수확량</h2>
+          <p class="card-sub" id="queries-sub"></p>
+        </header>
+        <div class="chart" id="chart-queries"></div>
+      </section>
+      <section class="card">
+        <header class="card-head">
+          <h2>쿼리 목록</h2>
+          <p class="card-sub"><code>config/keywords.yml</code>의 쿼리와 DB에 기록된 실적</p>
+        </header>
+        <div class="table-wrap" id="table-queries"></div>
+      </section>
+    </section>
+
+    <!-- 스코어링 -->
+    <section class="view" id="view-scoring" role="tabpanel" hidden>
+      <section class="card">
+        <header class="card-head">
+          <h2>점수 계산 규칙</h2>
+          <p class="card-sub">본문에서 용어가 매칭되면 가중치가 더해지고, 제목에 있으면 배수가 곱해집니다.</p>
+        </header>
+        <div id="scoring-formula" class="formula"></div>
+      </section>
+      <section class="card">
+        <header class="card-head">
+          <h2>점수 시뮬레이터</h2>
+          <p class="card-sub">제목·초록을 붙여 넣으면 파이프라인과 같은 함수로 점수를 계산합니다.</p>
+        </header>
+        <div class="sim">
+          <label class="field grow">
+            <span>제목</span>
+            <input type="text" id="sim-title" placeholder="MARL-based Routing for LEO Satellite Networks">
+          </label>
+          <label class="field checkbox">
+            <input type="checkbox" id="sim-code">
+            <span>코드 공개</span>
+          </label>
+          <label class="field grow full">
+            <span>초록</span>
+            <textarea id="sim-abstract" rows="4" placeholder="Abstract…"></textarea>
+          </label>
+        </div>
+        <div id="sim-result"></div>
+      </section>
+      <div id="scoring-axes"></div>
+    </section>
+
+    <!-- 트렌드 -->
+    <section class="view" id="view-trends" role="tabpanel" hidden>
+      <div class="filters">
+        <label class="field">
+          <span>기간</span>
+          <select id="t-days">
+            <option value="7">최근 7일</option>
+            <option value="30" selected>최근 30일</option>
+            <option value="90">최근 90일</option>
+            <option value="365">최근 1년</option>
+          </select>
+        </label>
+        <p class="filter-note" id="trend-note"></p>
+      </div>
+      <section class="card">
+        <header class="card-head">
+          <h2>도메인 × 방법론/과업 트렌드 맵</h2>
+          <p class="card-sub">한 논문이 두 축의 태그를 동시에 가질 때 셀이 채워집니다.</p>
+        </header>
+        <div id="trend-matrix"></div>
+      </section>
+      <div class="grid-2">
+        <section class="card">
+          <header class="card-head">
+            <h2>자주 등장한 태그</h2>
+            <p class="card-sub">기간 내 태그별 논문 수</p>
+          </header>
+          <div class="chart" id="chart-tags"></div>
+        </section>
+        <section class="card">
+          <header class="card-head">
+            <h2>반복된 조합</h2>
+            <p class="card-sub">주간 트렌드 리포트와 동일한 집계</p>
+          </header>
+          <div class="chart" id="chart-pairs"></div>
+        </section>
+      </div>
+      <section class="card">
+        <header class="card-head">
+          <h2>상위 도메인 추이</h2>
+          <p class="card-sub" id="trend-series-sub">가장 많이 등장한 도메인 3개의 일자별 신규 논문 수</p>
+        </header>
+        <div class="chart" id="chart-trend-series"></div>
+      </section>
+      <section class="card">
+        <header class="card-head">
+          <h2>기간 내 상위 논문</h2>
+        </header>
+        <div class="table-wrap" id="table-trend-papers"></div>
+      </section>
+    </section>
+
+    <!-- 리포트 -->
+    <section class="view" id="view-reports" role="tabpanel" hidden>
+      <div class="split">
+        <section class="card list-card">
+          <header class="card-head">
+            <h2>생성된 리포트</h2>
+            <p class="card-sub" id="reports-sub"></p>
+          </header>
+          <div id="report-list" class="paper-list"></div>
+        </section>
+        <section class="card detail-card" id="report-detail">
+          <p class="empty">리포트를 선택하세요.</p>
+        </section>
+      </div>
+    </section>
+  </main>
+</div>
+
+<div class="tooltip" id="tooltip" role="status" hidden></div>
+<script src="/static/app.js"></script>
+</body>
+</html>

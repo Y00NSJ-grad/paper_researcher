@@ -85,7 +85,11 @@ CREATE TABLE IF NOT EXISTS feedback (
 CREATE INDEX IF NOT EXISTS idx_papers_first_seen ON papers(first_seen_at);
 CREATE INDEX IF NOT EXISTS idx_papers_score ON papers(score DESC);
 CREATE INDEX IF NOT EXISTS idx_versions_paper ON paper_versions(paper_id);
+CREATE INDEX IF NOT EXISTS idx_feedback_paper ON feedback(paper_id, id DESC);
 """
+
+# Mirrors the CHECK constraint on feedback.value.
+FEEDBACK_VALUES = ("keep", "maybe", "reject", "read")
 
 
 def _iso(value: datetime | None) -> str | None:
@@ -317,6 +321,41 @@ class PaperStore:
                 LIMIT ?
                 """,
                 (_iso(since), limit),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def record_feedback(self, paper_id: int, value: str, source: str = "dashboard") -> dict:
+        """Append a verdict. History is kept; the newest row is the current one."""
+        if value not in FEEDBACK_VALUES:
+            raise ValueError(f"Unknown feedback value: {value!r}")
+        now = _iso(datetime.now(UTC))
+        with self.connect() as connection:
+            paper = connection.execute(
+                "SELECT 1 FROM papers WHERE id = ?", (paper_id,)
+            ).fetchone()
+            if paper is None:
+                raise LookupError(f"No paper with id {paper_id}")
+            connection.execute(
+                "INSERT INTO feedback(paper_id, value, source, created_at) VALUES (?, ?, ?, ?)",
+                (paper_id, value, source, now),
+            )
+        return {"paper_id": paper_id, "value": value, "source": source, "created_at": now}
+
+    def clear_feedback(self, paper_id: int) -> int:
+        with self.connect() as connection:
+            cursor = connection.execute(
+                "DELETE FROM feedback WHERE paper_id = ?", (paper_id,)
+            )
+            return int(cursor.rowcount)
+
+    def feedback_history(self, paper_id: int) -> list[dict]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT value, source, created_at FROM feedback
+                WHERE paper_id = ? ORDER BY id DESC
+                """,
+                (paper_id,),
             ).fetchall()
         return [dict(row) for row in rows]
 

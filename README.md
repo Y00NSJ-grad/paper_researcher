@@ -22,6 +22,7 @@ systemd user timer → Python virtualenv → SQLite → Markdown/Slack
 - Daily Digest 및 7일/30일 Trend Map
 - Slack Incoming Webhook 전달
 - Ubuntu 사용자 systemd timer
+- 수집 데이터·쿼리 실적·점수 책정 과정을 확인하는 읽기 전용 로컬 대시보드
 
 ## 요구 사항
 
@@ -221,6 +222,51 @@ uv run paper-radar monthly --days 30
 
 OpenAI API key가 비어 있다면 `--summarize` 값과 관계없이 OpenAI 호출은 건너뜁니다.
 명시적으로 요약을 끄려면 `--summarize 0`을 사용합니다.
+
+## 로컬 대시보드
+
+SQLite에 쌓인 데이터, 쿼리 실적, 점수 책정 과정, Trend Map을 브라우저에서 확인합니다.
+
+```bash
+uv run paper-radar dashboard          # http://127.0.0.1:8765
+uv run paper-radar dashboard --port 9000
+```
+
+- 쓰기는 피드백 판정(`feedback` 테이블) 하나뿐입니다. 수집한 논문·점수·실행
+  기록은 대시보드에서 변경되지 않고, 파이프라인을 실행하지도 않습니다.
+- 기본적으로 loopback(`127.0.0.1`)에만 바인딩하고, `Host` 헤더가 loopback이
+  아닌 요청은 거부합니다. 외부 공개용이 아닙니다.
+- 표준 라이브러리 `http.server`만 사용하므로 추가 의존성이 없습니다.
+- 원격 Ubuntu 서버에서 실행 중이라면 SSH 터널로 접근합니다.
+
+  ```bash
+  ssh -N -L 8765:127.0.0.1:8765 user@server
+  ```
+
+탭 구성:
+
+| 탭 | 내용 |
+| --- | --- |
+| 개요 | 논문·버전·실행 건수, 수집 추이, 점수 분포, 소스별 수집량, 피드백 분류, `pipeline_runs` 기록 |
+| 논문 | 검색·소스·태그·기간·점수·피드백 필터, 코드 공개/서베이 배지, 논문별 점수 책정 내역과 매칭 용어, 소스 버전, 매칭된 쿼리, Keep/Maybe/Reject/Read 기록 |
+| 쿼리 | `keywords.yml`의 쿼리별 논문 수·실행 수·평균 점수, 설정에서 사라진 쿼리 표시 |
+| 스코어링 | 가중치와 보너스 규칙, 축별 태그·용어 목록, 임의 제목/초록 점수 시뮬레이터 |
+| 트렌드 맵 | 도메인 × 방법론/과업 히트맵, 태그 빈도, 반복 조합, 상위 도메인 추이 |
+| 리포트 | `outputs/` 아래 생성된 Markdown 리포트 열람 |
+
+점수 책정 화면은 파이프라인과 동일한 `radar.scoring.explain_score`를 호출하므로,
+`keywords.yml`을 수정한 뒤 아직 재수집하지 않은 논문은 저장된 점수와 현재 규칙의
+점수 차이를 함께 표시합니다.
+
+### 피드백 기록
+
+논문 상세에서 Keep / Maybe / Reject / Read를 눌러 판정을 남깁니다.
+
+- `feedback` 테이블에 **append**되며 이력이 남습니다. 가장 최근 행이 현재 판정이고,
+  필터와 집계는 이 값을 따릅니다. `기록 지우기`는 해당 논문의 이력을 삭제합니다.
+- 로컬 서버라도 다른 사이트가 브라우저를 통해 이 포트로 요청을 보낼 수 있으므로,
+  쓰기 요청은 `application/json` 본문(CORS preflight를 유발하고 이 서버는 응답하지
+  않음)과 loopback `Origin`을 함께 요구합니다. 폼 전송이나 교차 출처 요청은 403입니다.
 
 ## 설정 조정
 
