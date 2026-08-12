@@ -550,7 +550,7 @@ async function loadPaperList() {
           ? el("span", { class: "pill attr code", title: "코드 공개 (점수 +보너스)" }, ["⌘ 코드"])
           : null,
         paper.is_survey
-          ? el("span", { class: "pill attr survey", title: "제목에 survey/review 포함 (점수 +보너스)" }, ["❋ 서베이"])
+          ? el("span", { class: "pill attr survey", title: "제목에 survey/review 포함 (점수 +보너스)" }, ["❋ survey"])
           : null,
         ...["domains", "methods", "tasks"].flatMap((axis) =>
           paper.tags[axis].map((tag) => tagPill(tag, axis))),
