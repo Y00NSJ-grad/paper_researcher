@@ -9,6 +9,7 @@ import httpx
 
 from radar.collectors.arxiv import ArxivCollector
 from radar.collectors.base import Collector
+from radar.collectors.common import anchors_from_config
 from radar.collectors.huggingface import HuggingFaceCollector
 from radar.collectors.ieee_xplore import IeeeXploreCollector
 from radar.collectors.openalex import OpenAlexCollector
@@ -45,8 +46,9 @@ class RadarRunner:
         if collectors is not None:
             self.collectors = collectors
         else:
+            anchors = anchors_from_config(self.config)
             self.collectors = [
-                ArxivCollector(settings.user_agent),
+                ArxivCollector(settings.user_agent, anchors),
                 OpenAlexCollector(
                     settings.openalex_api_key,
                     settings.contact_email,
@@ -54,7 +56,7 @@ class RadarRunner:
                 ),
                 SemanticScholarCollector(settings.semantic_scholar_api_key, settings.user_agent),
                 OpenReviewCollector(settings.user_agent, settings.openreview_token),
-                HuggingFaceCollector(settings.user_agent, settings.huggingface_token),
+                HuggingFaceCollector(settings.user_agent, settings.huggingface_token, anchors),
             ]
             if settings.ieee_xplore_enabled and settings.ieee_xplore_api_key:
                 self.collectors.append(

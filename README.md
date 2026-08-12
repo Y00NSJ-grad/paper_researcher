@@ -275,7 +275,15 @@ uv run paper-radar dashboard --port 9000
 - `methods`, `domains`, `tasks`: 태그 및 가중치
 - `queries.daily`: 매일 실행하는 직접 교차 검색
 - `queries.weekly`: 넓은 탐색 검색
+- `extra_anchors`: 전용 도메인이 없는 주제를 수집망에 추가
 - `scoring.minimum_relevant`: DB와 Digest에 포함할 최소 점수
+
+arXiv와 Hugging Face는 쿼리 문자열로 직접 검색하지 않습니다. 쿼리의 모든 단어를
+AND로 묶으면 하루치 창에서 결과가 0건이 되기 때문에, 두 소스는 `domains` 전체 항목과
+`extra_anchors`를 OR로 묶은 하나의 넓은 수집망을 기간으로 한정해 던진 뒤 `scoring`이
+관련성을 판정합니다. 두 소스에서 쿼리 문자열은 수집된 논문을 어느 쿼리에 귀속시킬지
+정하는 출처 라벨로만 쓰입니다. 수집 범위를 넓히거나 좁히려면 `domains`와
+`extra_anchors`를 조정하세요. 나머지 소스는 쿼리 문자열을 그대로 검색어로 사용합니다.
 
 첫 2주 동안은 검색식과 임계값을 조정하는 보정 기간으로 보는 것이 좋습니다.
 
