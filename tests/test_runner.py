@@ -1,13 +1,13 @@
 import tempfile
 import unittest
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import httpx
 
 from radar.config import Settings
 from radar.models import PaperCandidate
-from radar.runner import RadarRunner
+from radar.runner import CATCHUP_LIMIT_DAYS, RadarRunner
 
 
 class FixtureCollector:
@@ -68,7 +68,95 @@ class HttpFailureCollector:
         raise httpx.HTTPStatusError("request failed", request=request, response=response)
 
 
+class WindowRecordingCollector:
+    """Records the `since` it was handed, and fails on demand."""
+
+    name = "windowed"
+
+    def __init__(self, fail: bool = False):
+        self.fail = fail
+        self.windows: list[datetime] = []
+
+    def search(self, query: str, since: datetime, limit: int = 25) -> list[PaperCandidate]:
+        self.windows.append(since)
+        if self.fail:
+            raise httpx.ConnectError("source is down")
+        return []
+
+
 class RunnerTest(unittest.TestCase):
+    def _settings(self, root: Path) -> Settings:
+        return Settings(
+            db_path=root / "papers.db",
+            output_dir=root / "outputs",
+            config_path=Path(__file__).parents[1] / "config" / "keywords.yml",
+            slack_webhook_url=None,
+            openalex_api_key=None,
+            openai_api_key=None,
+            openai_model="test-model",
+            contact_email=None,
+            user_agent="paper-radar-test",
+        )
+
+    def _run_daily(self, runner: RadarRunner) -> None:
+        runner.collect_and_report(
+            kind="daily",
+            since_hours=48,
+            top_n=10,
+            summarize_n=0,
+            dry_run=True,
+            limit_per_query=5,
+        )
+
+    def test_a_failed_source_reaches_back_to_its_last_good_fetch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            settings = self._settings(Path(directory))
+            collector = WindowRecordingCollector()
+
+            runner = RadarRunner(settings, collectors=[collector])
+            self._run_daily(runner)
+            first_window = collector.windows[-1]
+
+            # Pretend the last success was a week ago and the source then failed.
+            week_ago = datetime.now(UTC) - timedelta(days=7)
+            runner.store.mark_collected(collector.name, week_ago)
+            collector.fail = True
+            with self.assertLogs("radar.runner", level="ERROR"):
+                self._run_daily(runner)
+
+            collector.fail = False
+            self._run_daily(runner)
+            recovered_window = collector.windows[-1]
+
+            # The 48-hour window would have skipped straight over the outage.
+            self.assertLess(recovered_window, first_window)
+            self.assertAlmostEqual(recovered_window.timestamp(), week_ago.timestamp(), delta=2)
+
+    def test_catchup_reach_is_capped(self):
+        with tempfile.TemporaryDirectory() as directory:
+            settings = self._settings(Path(directory))
+            collector = WindowRecordingCollector()
+            runner = RadarRunner(settings, collectors=[collector])
+            runner.store.mark_collected(collector.name, datetime.now(UTC) - timedelta(days=400))
+
+            self._run_daily(runner)
+
+            floor = datetime.now(UTC) - timedelta(days=CATCHUP_LIMIT_DAYS)
+            # A long silence must not turn one run into a full-archive crawl.
+            self.assertAlmostEqual(collector.windows[-1].timestamp(), floor.timestamp(), delta=2)
+
+    def test_a_healthy_source_keeps_the_plain_window(self):
+        with tempfile.TemporaryDirectory() as directory:
+            settings = self._settings(Path(directory))
+            collector = WindowRecordingCollector()
+            runner = RadarRunner(settings, collectors=[collector])
+
+            self._run_daily(runner)
+            self._run_daily(runner)
+
+            expected = datetime.now(UTC) - timedelta(hours=48)
+            self.assertAlmostEqual(collector.windows[-1].timestamp(), expected.timestamp(), delta=2)
+
     def test_daily_pipeline_writes_deduplicated_report(self):
         project_root = Path(__file__).parents[1]
         with tempfile.TemporaryDirectory() as directory:

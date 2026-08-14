@@ -25,6 +25,9 @@ from radar.summarizer import OpenAISummarizer
 
 logger = logging.getLogger(__name__)
 
+# How far a recovering source may reach back to cover runs it missed.
+CATCHUP_LIMIT_DAYS = 14
+
 
 def _safe_error(exc: Exception) -> str:
     if isinstance(exc, httpx.HTTPStatusError):
@@ -77,7 +80,8 @@ class RadarRunner:
         limit_per_query: int = 25,
     ) -> Path:
         run_id = self.store.start_run(kind)
-        since = datetime.now(UTC) - timedelta(hours=since_hours)
+        run_started_at = datetime.now(UTC)
+        default_since = run_started_at - timedelta(hours=since_hours)
         query_groups = ["daily"] if kind == "daily" else ["daily", "weekly"]
         queries = [
             query
@@ -91,6 +95,8 @@ class RadarRunner:
 
         try:
             for collector in self.collectors:
+                since = self._catchup_since(collector.name, default_since, run_started_at)
+                fetch_failed = False
                 batch_search = getattr(collector, "search_many", None)
                 candidates_by_query: dict[str, list[PaperCandidate]] = {}
                 if callable(batch_search):
@@ -111,6 +117,7 @@ class RadarRunner:
                         try:
                             candidates = collector.search(query, since, limit_per_query)
                         except Exception as exc:  # noqa: BLE001 - isolate one source/query.
+                            fetch_failed = True
                             stats["source_errors"] += 1
                             message = (
                                 f"{collector.name} query failed ({query!r}): {_safe_error(exc)}"
@@ -141,6 +148,11 @@ class RadarRunner:
                             logger.exception(message)
                             errors.append(message)
 
+                # A candidate that failed to score still arrived, so only a failed
+                # fetch holds the window open for the next run.
+                if not fetch_failed:
+                    self.store.mark_collected(collector.name, run_started_at)
+
             stats["relevant"] = len(relevant_ids)
             stats["new"] = len(new_ids)
 
@@ -163,6 +175,21 @@ class RadarRunner:
         except Exception as exc:
             self.store.finish_run(run_id, "failed", stats, str(exc))
             raise
+
+    def _catchup_since(
+        self, source: str, default_since: datetime, now: datetime
+    ) -> datetime:
+        """Reach back to a source's last good fetch so an outage is not a hole.
+
+        A source that failed yesterday would otherwise never be asked for
+        yesterday's papers again: today's window opens after they were published,
+        and the digest only reports papers it has never seen. The reach is capped
+        so a long silence cannot turn one run into a full-archive crawl.
+        """
+        last_success = self.store.last_collected_at(source)
+        if last_success is None or last_success >= default_since:
+            return default_since
+        return max(last_success, now - timedelta(days=CATCHUP_LIMIT_DAYS))
 
     def trend_report(self, kind: str, days: int, dry_run: bool) -> Path:
         rows = self.store.recent_papers(days=days)

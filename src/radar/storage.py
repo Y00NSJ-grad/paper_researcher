@@ -66,6 +66,11 @@ CREATE TABLE IF NOT EXISTS run_papers (
     PRIMARY KEY(run_id, paper_id)
 );
 
+CREATE TABLE IF NOT EXISTS collector_state (
+    source TEXT PRIMARY KEY,
+    last_success_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS summaries (
     paper_id INTEGER PRIMARY KEY REFERENCES papers(id) ON DELETE CASCADE,
     abstract_hash TEXT NOT NULL,
@@ -150,6 +155,24 @@ class PaperStore:
                     error,
                     run_id,
                 ),
+            )
+
+    def last_collected_at(self, source: str) -> datetime | None:
+        """When this source last completed a fetch without error, if ever."""
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT last_success_at FROM collector_state WHERE source = ?", (source,)
+            ).fetchone()
+        return datetime.fromisoformat(row["last_success_at"]) if row else None
+
+    def mark_collected(self, source: str, at: datetime) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO collector_state(source, last_success_at) VALUES (?, ?)
+                ON CONFLICT(source) DO UPDATE SET last_success_at = excluded.last_success_at
+                """,
+                (source, _iso(at)),
             )
 
     def _find_paper_id(self, connection: sqlite3.Connection, paper: PaperCandidate) -> int | None:
