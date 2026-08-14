@@ -13,7 +13,9 @@ from collections import Counter, defaultdict
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from radar.config import Settings, load_config
+from radar.collectors.common import anchors_from_config
+from radar.collectors.plan import query_plan
+from radar.config import QUERY_GROUPS, Settings, config_token, load_config, write_queries
 from radar.reports import KST, trend_counts
 from radar.scoring import explain_score, is_survey
 from radar.storage import FEEDBACK_VALUES, PaperStore
@@ -23,13 +25,19 @@ AXES = ("methods", "domains", "tasks")
 LATEST_FEEDBACK = (
     "SELECT f.value FROM feedback f WHERE f.paper_id = p.id ORDER BY f.id DESC LIMIT 1"
 )
+# Papers without the sort key sink to the bottom: SQLite orders NULLs last on
+# DESC, and the second key keeps the ordering stable within ties.
 SORTS = {
     "score": "p.score DESC, p.first_seen_at DESC",
     "first_seen": "p.first_seen_at DESC, p.score DESC",
     "published": "p.published_at DESC, p.score DESC",
-    "citations": "COALESCE(p.citation_count, -1) DESC, p.score DESC",
 }
 SCORE_BUCKETS = ((0, 20), (20, 40), (40, 60), (60, 80), (80, 101))
+REPORT_PERIODS = ("daily", "weekly", "monthly")
+
+
+class ConfigChanged(RuntimeError):
+    """keywords.yml moved under us; the caller must reload before saving."""
 
 
 def _json(value: Any, default: Any) -> Any:
@@ -57,6 +65,18 @@ def _kst_date(value: str | None) -> str | None:
 def _tag_list(tags_json: str | None) -> list[tuple[str, str]]:
     tags = _json(tags_json, {})
     return [(axis, tag) for axis in AXES for tag in tags.get(axis, [])]
+
+
+def report_period(kind: str) -> str:
+    """Group a report directory under its schedule.
+
+    The pipeline writes `daily`, `weekly`, `weekly-trends` and `monthly-trends`,
+    so the trend maps belong to the schedule that produced them.
+    """
+    for period in REPORT_PERIODS:
+        if kind == period or kind.startswith(f"{period}-"):
+            return period
+    return "other"
 
 
 def parse_query_id(query_id: str) -> dict[str, str]:
@@ -507,6 +527,51 @@ class DashboardData:
         return {
             "items": items,
             "groups": list(configured.keys()),
+            "editable": {
+                group: list(configured.get(group) or []) for group in QUERY_GROUPS
+            },
+            "token": config_token(self.settings.config_path),
+            "config_path": str(self.settings.config_path),
+        }
+
+    def save_queries(self, groups: dict[str, list[str]], token: str) -> dict[str, Any]:
+        """Persist query edits to keywords.yml, refusing to overwrite a newer file."""
+        current = config_token(self.settings.config_path)
+        if token != current:
+            raise ConfigChanged(
+                "keywords.yml이 대시보드 밖에서 수정되었습니다. "
+                "새로고침한 뒤 다시 저장하세요."
+            )
+        write_queries(self.settings.config_path, groups)
+        return self.queries()
+
+    def plan(self, since_hours: int = 48, limit_per_query: int = 25) -> dict[str, Any]:
+        """What each source would be asked, for the queries a daily run uses."""
+        configured = self.config.get("queries", {}) or {}
+        since = datetime.now(UTC) - timedelta(hours=since_hours)
+        groups = {
+            group: list(configured.get(group) or [])
+            for group in QUERY_GROUPS
+        }
+        plans = {
+            group: query_plan(
+                self.config,
+                queries,
+                since,
+                limit_per_query=limit_per_query,
+                ieee_enabled=bool(
+                    self.settings.ieee_xplore_enabled and self.settings.ieee_xplore_api_key
+                ),
+            )
+            for group, queries in groups.items()
+        }
+        return {
+            "since": since.isoformat(),
+            "since_hours": since_hours,
+            "limit_per_query": limit_per_query,
+            "groups": groups,
+            "plans": plans,
+            "anchors": anchors_from_config(self.config),
             "config_path": str(self.settings.config_path),
         }
 
@@ -666,10 +731,12 @@ class DashboardData:
         base = self.settings.output_dir
         items = []
         if base.is_dir():
-            for path in sorted(base.glob("*/*.md"), reverse=True):
+            for path in base.glob("*/*.md"):
+                kind = path.parent.name
                 items.append(
                     {
-                        "kind": path.parent.name,
+                        "kind": kind,
+                        "period": report_period(kind),
                         "name": path.stem,
                         "size": path.stat().st_size,
                         "modified_at": datetime.fromtimestamp(
@@ -677,8 +744,22 @@ class DashboardData:
                         ).isoformat(),
                     }
                 )
+        # Newest report date first. Globbing yields directory order, which would
+        # otherwise sort by kind and bury today's digest under `weekly-trends`.
+        items.sort(key=lambda item: (item["name"], item["modified_at"]), reverse=True)
         kinds = sorted({item["kind"] for item in items})
-        return {"items": items, "kinds": kinds, "output_dir": str(base)}
+        counts = Counter(item["period"] for item in items)
+        periods = [
+            {"period": period, "reports": counts.get(period, 0)}
+            for period in (*REPORT_PERIODS, "other")
+            if period != "other" or counts.get("other", 0)
+        ]
+        return {
+            "items": items,
+            "kinds": kinds,
+            "periods": periods,
+            "output_dir": str(base),
+        }
 
     def report(self, kind: str, name: str) -> str | None:
         base = self.settings.output_dir.resolve()

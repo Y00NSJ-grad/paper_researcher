@@ -17,7 +17,8 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
 from radar.config import Settings
-from radar.dashboard.data import DashboardData
+from radar.dashboard.data import ConfigChanged, DashboardData
+from radar.storage import PaperStore
 
 logger = logging.getLogger(__name__)
 
@@ -152,18 +153,27 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         route = urlparse(self.path).path
         feedback_match = FEEDBACK_PATH.match(route)
-        if not feedback_match:
+        if not feedback_match and route != "/api/queries":
             self.close_connection = True
             self._error(HTTPStatus.NOT_FOUND, "Not found")
             return
-        paper_id = int(feedback_match.group(1))
         try:
             payload = self._body()
-            value = payload.get("value")
-            if value is None:
-                self._json(self.data.clear_feedback(paper_id))
+            if feedback_match:
+                paper_id = int(feedback_match.group(1))
+                value = payload.get("value")
+                if value is None:
+                    self._json(self.data.clear_feedback(paper_id))
+                else:
+                    self._json(self.data.record_feedback(paper_id, value))
             else:
-                self._json(self.data.record_feedback(paper_id, value))
+                self._json(
+                    self.data.save_queries(
+                        payload.get("queries") or {}, str(payload.get("token") or "")
+                    )
+                )
+        except ConfigChanged as exc:
+            self._error(HTTPStatus.CONFLICT, str(exc))
         except (TypeError, ValueError) as exc:
             self._error(HTTPStatus.BAD_REQUEST, str(exc))
         except LookupError as exc:
@@ -171,7 +181,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         except BrokenPipeError:
             pass
         except Exception:
-            logger.exception("Feedback write failed: %s", route)
+            logger.exception("Write failed: %s", route)
             self._error(HTTPStatus.INTERNAL_SERVER_ERROR, "Request failed; see the server log.")
 
     def _route(self, route: str, params: dict[str, list[str]]) -> None:
@@ -215,6 +225,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if route == "/api/queries":
             self._json(data.queries())
             return
+        if route == "/api/query-plan":
+            self._json(
+                data.plan(
+                    since_hours=max(1, min(_int(params, "since_hours", 48), 24 * 365)),
+                    limit_per_query=max(1, min(_int(params, "limit", 25), 200)),
+                )
+            )
+            return
         if route == "/api/scoring":
             self._json(data.scoring())
             return
@@ -254,7 +272,9 @@ def build_server(settings: Settings, host: str, port: int) -> ThreadingHTTPServe
 
 def serve(settings: Settings, host: str = "127.0.0.1", port: int = 8765) -> None:
     if not settings.db_path.exists():
-        logger.warning("%s does not exist yet; run `paper-radar init-db`", settings.db_path)
+        # Otherwise every endpoint fails on a missing table before the first run.
+        logger.warning("%s does not exist yet; creating an empty database", settings.db_path)
+        PaperStore(settings.db_path).initialize()
     httpd = build_server(settings, host, port)
     bound_host, bound_port = httpd.server_address[:2]
     display = f"[{bound_host}]" if ":" in str(bound_host) else bound_host

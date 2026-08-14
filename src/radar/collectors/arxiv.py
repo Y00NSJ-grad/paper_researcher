@@ -56,6 +56,23 @@ def _date_range(since: datetime, until: datetime) -> str:
     return f"submittedDate:[{start} TO {end}]"
 
 
+def search_expression(
+    anchors: Sequence[str],
+    queries: Sequence[str],
+    since: datetime,
+    until: datetime | None = None,
+) -> str:
+    """The `search_query` sent to arXiv.
+
+    The individual queries are not sent; they only route the results afterwards.
+    Kept module-level so the dashboard can preview it without a client.
+    """
+    return (
+        f"({_net_expression(net_terms(anchors, list(queries)))})"
+        f" AND {_date_range(since, until or datetime.now(UTC))}"
+    )
+
+
 class ArxivCollector:
     name = "arxiv"
     endpoint = "https://export.arxiv.org/api/query"
@@ -105,10 +122,7 @@ class ArxivCollector:
     ) -> dict[str, list[PaperCandidate]]:
         if not queries:
             return {}
-        expression = (
-            f"({_net_expression(net_terms(self.anchors, queries))})"
-            f" AND {_date_range(since, datetime.now(UTC))}"
-        )
+        expression = search_expression(self.anchors, queries, since)
         url = (
             f"{self.endpoint}?search_query={quote_plus(expression)}"
             f"&start=0&max_results={min(limit * len(queries), MAX_FEED_RESULTS)}"

@@ -51,15 +51,22 @@ class SemanticScholarCollector:
             after=self._mark_request,
         )
 
+    @classmethod
+    def search_params(cls, query: str, since: datetime, limit: int = 25) -> dict[str, str]:
+        """The request this collector sends. Shared with the dashboard preview.
+
+        Hyphens are stripped because the bulk endpoint reads `-` as NOT, which
+        silently excludes the very papers a hyphenated phrase is aiming at.
+        """
+        return {
+            "query": query.replace("-", " "),
+            "publicationDateOrYear": f"{since.date().isoformat()}:",
+            "sort": "publicationDate:desc",
+            "fields": cls.fields,
+        }
+
     def search(self, query: str, since: datetime, limit: int = 25) -> list[PaperCandidate]:
-        response = self._get_with_retry(
-            {
-                "query": query.replace("-", " "),
-                "publicationDateOrYear": f"{since.date().isoformat()}:",
-                "sort": "publicationDate:desc",
-                "fields": self.fields,
-            }
-        )
+        response = self._get_with_retry(self.search_params(query, since, limit))
         results: list[PaperCandidate] = []
         # The bulk endpoint returns a server-sized batch and does not honor the
         # relevance endpoint's `limit` parameter. It is sorted newest-first above.

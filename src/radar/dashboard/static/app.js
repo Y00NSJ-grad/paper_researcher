@@ -803,7 +803,19 @@ function renderPaperDetail(paper) {
 
 // ------------------------------------------------------------------ 쿼리 뷰
 
+const QUERY_GROUPS = ["daily", "weekly"];
+const queriesState = { data: null, draft: null, token: "", bound: false };
+
 async function renderQueries() {
+  if (!queriesState.bound) {
+    queriesState.bound = true;
+    document.getElementById("q-save").addEventListener("click", saveQueries);
+    document.getElementById("q-revert").addEventListener("click", () => {
+      queriesState.draft = structuredClone(queriesState.data.editable);
+      paintEditor();
+    });
+    document.getElementById("plan-group").addEventListener("change", paintPlan);
+  }
   let data;
   try {
     data = await api("/api/queries");
@@ -811,6 +823,17 @@ async function renderQueries() {
     clear(document.getElementById("chart-queries")).append(errorBox(error.message));
     return;
   }
+  queriesState.data = data;
+  queriesState.token = data.token;
+  queriesState.draft = structuredClone(data.editable);
+  paintEditor();
+  loadPlan();
+  paintQueryStats(data);
+}
+
+/* Yield counts come from the database, so a config save repaints these without
+   touching the editor's draft or its status line. */
+function paintQueryStats(data) {
   document.getElementById("queries-sub").textContent =
     `${data.config_path} · 쿼리 ${data.items.length}개 · 그룹 ${data.groups.join(", ")}`;
 
@@ -839,6 +862,180 @@ async function renderQueries() {
     ]))),
   ]);
   clear(document.getElementById("table-queries")).append(table);
+}
+
+/* ---- 쿼리 편집: the draft lives in memory until 저장 writes keywords.yml ---- */
+
+function draftIsDirty() {
+  return JSON.stringify(queriesState.draft) !== JSON.stringify(queriesState.data.editable);
+}
+
+function paintEditor() {
+  const container = clear(document.getElementById("query-editor"));
+  for (const group of QUERY_GROUPS) {
+    const entries = queriesState.draft[group] || [];
+    const rows = el("div", {});
+    entries.forEach((text, index) => {
+      const input = el("input", {
+        type: "text", value: text, spellcheck: "false",
+        "aria-label": `${group} 쿼리 ${index + 1}`,
+        oninput: (event) => {
+          queriesState.draft[group][index] = event.target.value;
+          updateEditorState();
+        },
+      });
+      rows.append(el("div", { class: "query-row" }, [
+        input,
+        el("button", {
+          class: "icon-button", type: "button", title: "이 쿼리 삭제",
+          onclick: () => {
+            queriesState.draft[group].splice(index, 1);
+            paintEditor();
+          },
+        }, ["✕"]),
+      ]));
+    });
+    if (!entries.length) {
+      rows.append(el("p", { class: "note", text: "이 그룹에는 쿼리가 없습니다." }));
+    }
+    container.append(el("div", { class: "query-group" }, [
+      el("h3", { text: `${group} (${entries.length})` }),
+      rows,
+      el("button", {
+        class: "ghost query-add", type: "button",
+        onclick: () => {
+          queriesState.draft[group].push("");
+          paintEditor();
+          const inputs = container.querySelectorAll(".query-group input");
+          if (inputs.length) inputs[inputs.length - 1].focus();
+        },
+      }, ["+ 쿼리 추가"]),
+    ]));
+  }
+  updateEditorState();
+}
+
+function updateEditorState() {
+  const dirty = draftIsDirty();
+  document.getElementById("q-save").disabled = !dirty;
+  document.getElementById("q-revert").disabled = !dirty;
+  const note = document.getElementById("editor-note");
+  note.classList.remove("error");
+  note.textContent = dirty
+    ? "저장하지 않은 변경이 있습니다. 저장하면 keywords.yml의 queries 블록만 다시 씁니다."
+    : "keywords.yml과 동일합니다.";
+  document.getElementById("editor-sub").textContent =
+    `${queriesState.data.config_path} · daily ${queriesState.draft.daily.length}개 · `
+    + `weekly ${queriesState.draft.weekly.length}개`;
+}
+
+async function saveQueries() {
+  const note = document.getElementById("editor-note");
+  const buttons = [document.getElementById("q-save"), document.getElementById("q-revert")];
+  for (const button of buttons) button.disabled = true;
+  note.classList.remove("error");
+  note.textContent = "저장 중…";
+  try {
+    const result = await apiPost("/api/queries", {
+      token: queriesState.token,
+      queries: queriesState.draft,
+    });
+    queriesState.data = result;
+    queriesState.token = result.token;
+    queriesState.draft = structuredClone(result.editable);
+    paintEditor();
+    note.textContent = "keywords.yml에 저장했습니다. 다음 수집부터 적용됩니다.";
+    paintQueryStats(result);
+    loadPlan();
+  } catch (error) {
+    note.classList.add("error");
+    note.textContent = "저장하지 못했습니다: " + error.message;
+    for (const button of buttons) button.disabled = false;
+  }
+}
+
+/* ---- 소스별 실제 요청 ---- */
+
+const planState = { data: null };
+
+async function loadPlan() {
+  try {
+    planState.data = await api("/api/query-plan", { since_hours: 48 });
+  } catch (error) {
+    clear(document.getElementById("query-plan")).append(errorBox(error.message));
+    return;
+  }
+  paintPlan();
+}
+
+function paintPlan() {
+  const data = planState.data;
+  if (!data) return;
+  const group = document.getElementById("plan-group").value;
+  const container = clear(document.getElementById("query-plan"));
+  document.getElementById("plan-sub").textContent =
+    `최근 ${data.since_hours}시간 기준 · 쿼리당 최대 ${data.limit_per_query}건 · 앵커 ${data.anchors.length}개`;
+
+  const entries = data.plans[group] || [];
+  if (!entries.length) {
+    container.append(el("p", { class: "empty", text: "이 그룹에는 쿼리가 없습니다." }));
+    return;
+  }
+  for (const entry of entries) {
+    const head = el("div", { class: "plan-head" }, [
+      el("h3", { text: entry.source }),
+      el("span", {
+        class: "pill mode-" + entry.mode,
+        text: entry.mode === "net" ? "그물 1회" : "쿼리별 전송",
+      }),
+      entry.request_count !== null && entry.request_count !== undefined
+        ? el("span", { class: "pill", text: `요청 ${entry.request_count}회` })
+        : el("span", { class: "pill", text: "날짜별 피드" }),
+      entry.enabled ? null : el("span", { class: "pill disabled", text: "비활성" }),
+      el("span", { class: "plan-endpoint", text: entry.endpoint }),
+    ]);
+    const card = el("div", { class: "plan-source" }, [
+      head,
+      el("p", { class: "plan-note", text: entry.note }),
+    ]);
+
+    if (entry.mode === "net") {
+      // The expression is the authoritative form where one exists; listing the
+      // terms as well would just repeat it, duplicates and all.
+      if (entry.expression) {
+        card.append(el("pre", { class: "expression", text: entry.expression }));
+      } else {
+        card.append(el("div", { class: "net-terms" },
+          entry.net_terms.slice(0, 60).map((term) => el("span", { class: "term", text: term }))));
+        if (entry.net_terms.length > 60) {
+          card.append(el("p", { class: "note", text: `외 ${entry.net_terms.length - 60}개` }));
+        }
+      }
+    } else {
+      card.append(el("table", { class: "plan-table" }, [
+        el("thead", {}, [el("tr", {}, [
+          el("th", { text: "설정한 쿼리" }),
+          el("th", { text: "실제로 보내는 값" }),
+        ])]),
+        el("tbody", {}, entry.requests.map((request) => el("tr", {}, [
+          el("td", {}, [el("code", { text: request.query })]),
+          el("td", {}, [
+            el("code", {
+              class: request.sent === request.query ? "" : "plan-changed",
+              text: request.sent,
+            }),
+          ]),
+        ]))),
+      ]));
+      if (entry.journals) {
+        card.append(el("p", {
+          class: "note",
+          text: `저널: ${entry.journals.join(", ")} — 쿼리마다 저널 수만큼 요청합니다.`,
+        }));
+      }
+    }
+    container.append(card);
+  }
 }
 
 // -------------------------------------------------------------- 스코어링 뷰
@@ -1019,22 +1216,52 @@ async function renderTrends() {
 
 // ------------------------------------------------------------------ 리포트 뷰
 
+/* The report list is small and fully fetched, so the period toggle filters the
+   cached items rather than making another round trip. */
+const reportsState = { data: null, bound: false };
+
 async function renderReports() {
   const list = document.getElementById("report-list");
-  let data;
+  if (!reportsState.bound) {
+    reportsState.bound = true;
+    document.getElementById("r-period").addEventListener("change", paintReports);
+  }
   try {
-    data = await api("/api/reports");
+    reportsState.data = await api("/api/reports");
   } catch (error) {
     clear(list).append(errorBox(error.message));
     return;
   }
-  document.getElementById("reports-sub").textContent = `${data.output_dir} · ${data.items.length}개`;
-  clear(list);
-  if (!data.items.length) {
-    list.append(el("p", { class: "empty", text: "생성된 리포트가 없습니다." }));
+  await paintReports();
+}
+
+async function paintReports() {
+  const data = reportsState.data;
+  if (!data) return;
+  const list = clear(document.getElementById("report-list"));
+  const period = document.getElementById("r-period").value;
+  const items = period ? data.items.filter((report) => report.period === period) : data.items;
+
+  const counts = new Map(data.periods.map((entry) => [entry.period, entry.reports]));
+  document.getElementById("reports-sub").textContent =
+    `${data.output_dir} · ${items.length}개`;
+  document.getElementById("reports-note").textContent =
+    ["daily", "weekly", "monthly"]
+      .map((name) => `${name} ${counts.get(name) || 0}`)
+      .join(" · ") + (counts.get("other") ? ` · 기타 ${counts.get("other")}` : "");
+
+  if (!items.length) {
+    list.append(el("p", {
+      class: "empty",
+      text: period ? `${period} 리포트가 아직 없습니다.` : "생성된 리포트가 없습니다.",
+    }));
+    clear(document.getElementById("report-detail")).append(
+      el("p", { class: "empty", text: "표시할 리포트가 없습니다." })
+    );
     return;
   }
-  data.items.forEach((report, order) => {
+
+  items.forEach((report, order) => {
     list.append(el("button", {
       class: "paper-item", type: "button",
       "aria-current": String(order === 0),
@@ -1048,12 +1275,13 @@ async function renderReports() {
     }, [
       el("h3", { text: `${report.kind} / ${report.name}` }),
       el("div", { class: "paper-item-meta" }, [
+        el("span", { class: "pill", text: report.period }),
         el("span", { class: "pill", text: (report.size / 1024).toFixed(1) + " KB" }),
         el("span", { class: "pill", text: dateLabel(report.modified_at, true) }),
       ]),
     ]));
   });
-  const newest = data.items[0];
+  const newest = items[0];
   await loadReport(newest.kind, newest.name);
 }
 

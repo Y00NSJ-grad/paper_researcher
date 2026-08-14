@@ -8,8 +8,16 @@ import urllib.request
 from datetime import UTC, datetime
 from pathlib import Path
 
+import yaml
+
+from radar.collectors import arxiv as arxiv_module
 from radar.config import Settings
-from radar.dashboard.data import DashboardData, parse_query_id
+from radar.dashboard.data import (
+    ConfigChanged,
+    DashboardData,
+    parse_query_id,
+    report_period,
+)
 from radar.dashboard.server import build_server
 from radar.models import PaperCandidate
 from radar.scoring import explain_score, is_survey, score_paper
@@ -230,6 +238,84 @@ class DashboardDataTest(unittest.TestCase):
             self.assertEqual(trends["matrix"]["max"], 1)
             self.assertEqual(len(trends["timeline"]["dates"]), 30)
 
+    def test_sorting_orders_by_the_requested_key(self):
+        with tempfile.TemporaryDirectory() as directory:
+            settings = make_settings(Path(directory))
+            seed(settings)
+            store = PaperStore(settings.db_path)
+            run_id = store.start_run("daily")
+            older = PaperCandidate(
+                source="arxiv",
+                source_id="2601.00002v1",
+                title="LEO satellite routing without learning",
+                url="https://arxiv.org/abs/2601.00002",
+                abstract="Routing over LEO satellite links.",
+                published_at=datetime(2026, 1, 5, tzinfo=UTC),
+                arxiv_id="2601.00002v1",
+            )
+            store.upsert_scored(score_paper(older, __import__("yaml").safe_load(CONFIG)), run_id)
+            data = DashboardData(settings)
+
+            by_score = [item["score"] for item in data.papers(sort="score")["items"]]
+            self.assertEqual(by_score, sorted(by_score, reverse=True))
+
+            by_published = [item["published_at"] for item in data.papers(sort="published")["items"]]
+            self.assertEqual(by_published, sorted(by_published, reverse=True))
+
+            by_seen = [item["first_seen_at"] for item in data.papers(sort="first_seen")["items"]]
+            self.assertEqual(by_seen, sorted(by_seen, reverse=True))
+
+    def test_unknown_sort_falls_back_to_score(self):
+        with tempfile.TemporaryDirectory() as directory:
+            settings = make_settings(Path(directory))
+            seed(settings)
+            data = DashboardData(settings)
+            self.assertEqual(
+                [item["id"] for item in data.papers(sort="citations")["items"]],
+                [item["id"] for item in data.papers(sort="score")["items"]],
+            )
+
+    def test_reports_are_grouped_by_schedule(self):
+        with tempfile.TemporaryDirectory() as directory:
+            settings = make_settings(Path(directory))
+            for kind in ("weekly", "weekly-trends", "monthly-trends", "quarterly"):
+                folder = settings.output_dir / kind
+                folder.mkdir(parents=True, exist_ok=True)
+                (folder / "2026-08-09.md").write_text("> report\n", encoding="utf-8")
+            listing = DashboardData(settings).reports()
+            periods = {item["kind"]: item["period"] for item in listing["items"]}
+
+            self.assertEqual(periods["daily"], "daily")
+            self.assertEqual(periods["weekly"], "weekly")
+            self.assertEqual(periods["weekly-trends"], "weekly")
+            self.assertEqual(periods["monthly-trends"], "monthly")
+            self.assertEqual(periods["quarterly"], "other")
+
+            counts = {entry["period"]: entry["reports"] for entry in listing["periods"]}
+            self.assertEqual(counts, {"daily": 1, "weekly": 2, "monthly": 1, "other": 1})
+
+    def test_reports_are_listed_newest_report_date_first(self):
+        with tempfile.TemporaryDirectory() as directory:
+            settings = make_settings(Path(directory))
+            for kind, name in (("weekly-trends", "2026-08-01"), ("daily", "2026-08-12")):
+                folder = settings.output_dir / kind
+                folder.mkdir(parents=True, exist_ok=True)
+                (folder / f"{name}.md").write_text("> report\n", encoding="utf-8")
+            items = DashboardData(settings).reports()["items"]
+
+            # Directory order would put `weekly-trends` first; the date must win.
+            self.assertEqual([item["name"] for item in items], ["2026-08-12", "2026-08-11", "2026-08-01"])
+
+    def test_report_periods_omit_other_when_every_kind_is_known(self):
+        with tempfile.TemporaryDirectory() as directory:
+            settings = make_settings(Path(directory))
+            listing = DashboardData(settings).reports()
+
+            self.assertEqual(
+                [entry["period"] for entry in listing["periods"]],
+                ["daily", "weekly", "monthly"],
+            )
+
     def test_reports_are_listed_and_read_within_the_output_directory(self):
         with tempfile.TemporaryDirectory() as directory:
             settings = make_settings(Path(directory))
@@ -326,6 +412,136 @@ class FeedbackTest(unittest.TestCase):
             connection.execute("DELETE FROM papers WHERE id = ?", (self.paper_id,))
 
         self.assertEqual(self.data.store.feedback_history(self.paper_id), [])
+
+
+class QueryPlanTest(unittest.TestCase):
+    def setUp(self):
+        self._directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self._directory.cleanup)
+        self.settings = make_settings(Path(self._directory.name))
+        self.data = DashboardData(self.settings)
+
+    def by_source(self, group: str = "daily") -> dict:
+        return {entry["source"]: entry for entry in self.data.plan()["plans"][group]}
+
+    def test_every_collector_is_described(self):
+        sources = self.by_source()
+        self.assertEqual(
+            set(sources),
+            {"openalex", "semantic_scholar", "openreview", "arxiv", "huggingface", "ieee_xplore"},
+        )
+
+    def test_per_query_sources_report_what_they_send(self):
+        openalex = self.by_source()["openalex"]
+        self.assertEqual(openalex["mode"], "per_query")
+        self.assertEqual(openalex["request_count"], 2)
+        self.assertEqual(openalex["requests"][0]["query"], "LEO satellite routing")
+        self.assertEqual(openalex["requests"][0]["sent"], "LEO satellite routing")
+        self.assertEqual(openalex["requests"][0]["params"]["search"], "LEO satellite routing")
+
+    def test_semantic_scholar_shows_its_hyphen_rewrite(self):
+        settings = self.settings
+        settings.config_path.write_text(
+            CONFIG.replace("    - 'LEO satellite routing'", "    - 'non-terrestrial routing'"),
+            encoding="utf-8",
+        )
+        entry = self.by_source()["semantic_scholar"]
+        request = next(r for r in entry["requests"] if r["query"] == "non-terrestrial routing")
+
+        self.assertEqual(request["sent"], "non terrestrial routing")
+        self.assertNotEqual(request["sent"], request["query"])
+
+    def test_arxiv_sends_one_net_rather_than_the_queries(self):
+        arxiv = self.by_source()["arxiv"]
+
+        self.assertEqual(arxiv["mode"], "net")
+        self.assertEqual(arxiv["request_count"], 1)
+        self.assertIn("LEO satellite", arxiv["net_terms"])
+        self.assertIn('all:"LEO satellite"', arxiv["expression"])
+        self.assertIn("submittedDate:[", arxiv["expression"])
+        # The query text itself is never handed to arXiv.
+        self.assertNotIn("LEO satellite routing", arxiv["expression"])
+
+    def test_the_preview_matches_what_the_collector_would_send(self):
+        plan = self.data.plan()
+        since = datetime.fromisoformat(plan["since"])
+        arxiv = next(e for e in plan["plans"]["daily"] if e["source"] == "arxiv")
+        expected = arxiv_module.search_expression(
+            plan["anchors"], plan["groups"]["daily"], since, since
+        )
+
+        self.assertEqual(arxiv["expression"].split(" AND ")[0], expected.split(" AND ")[0])
+
+    def test_huggingface_filters_the_feed_with_the_same_net(self):
+        sources = self.by_source()
+        self.assertEqual(sources["huggingface"]["net_terms"], sources["arxiv"]["net_terms"])
+        self.assertIsNone(sources["huggingface"]["request_count"])
+
+    def test_ieee_is_described_but_marked_disabled(self):
+        ieee = self.by_source()["ieee_xplore"]
+        self.assertFalse(ieee["enabled"])
+        self.assertTrue(ieee["journals"])
+        self.assertEqual(ieee["request_count"], 2 * len(ieee["journals"]))
+
+
+class SaveQueriesTest(unittest.TestCase):
+    def setUp(self):
+        self._directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self._directory.cleanup)
+        self.settings = make_settings(Path(self._directory.name))
+        seed(self.settings)
+        self.data = DashboardData(self.settings)
+
+    def test_saving_rewrites_the_config_and_returns_the_new_state(self):
+        token = self.data.queries()["token"]
+        result = self.data.save_queries(
+            {"daily": ["LEO satellite routing", "added query"], "weekly": []}, token
+        )
+
+        self.assertEqual(result["editable"]["daily"], ["LEO satellite routing", "added query"])
+        self.assertNotEqual(result["token"], token)
+        reloaded = yaml.safe_load(self.settings.config_path.read_text(encoding="utf-8"))
+        self.assertEqual(reloaded["queries"]["daily"], ["LEO satellite routing", "added query"])
+
+    def test_a_stale_token_is_refused_without_writing(self):
+        before = self.settings.config_path.read_text(encoding="utf-8")
+
+        with self.assertRaises(ConfigChanged):
+            self.data.save_queries({"daily": ["clobbered"], "weekly": []}, "stale-token")
+
+        self.assertEqual(self.settings.config_path.read_text(encoding="utf-8"), before)
+
+    def test_an_invalid_query_is_refused_without_writing(self):
+        token = self.data.queries()["token"]
+        before = self.settings.config_path.read_text(encoding="utf-8")
+
+        with self.assertRaises(ValueError):
+            self.data.save_queries({"daily": ["", "ok"], "weekly": []}, token)
+
+        self.assertEqual(self.settings.config_path.read_text(encoding="utf-8"), before)
+
+    def test_saved_queries_reach_the_plan_and_the_scorer_config(self):
+        token = self.data.queries()["token"]
+        self.data.save_queries({"daily": ['"brand new phrase" routing'], "weekly": []}, token)
+        plan = self.data.plan()
+
+        self.assertEqual(plan["groups"]["daily"], ['"brand new phrase" routing'])
+        arxiv = next(e for e in plan["plans"]["daily"] if e["source"] == "arxiv")
+        # A quoted span is specific enough to widen the net.
+        self.assertIn("brand new phrase", arxiv["net_terms"])
+
+
+class ReportPeriodTest(unittest.TestCase):
+    def test_maps_a_kind_to_its_schedule(self):
+        self.assertEqual(report_period("daily"), "daily")
+        self.assertEqual(report_period("weekly"), "weekly")
+        self.assertEqual(report_period("weekly-trends"), "weekly")
+        self.assertEqual(report_period("monthly-trends"), "monthly")
+
+    def test_an_unrecognised_kind_is_not_swallowed(self):
+        self.assertEqual(report_period("adhoc"), "other")
+        # A prefix match needs the separator, so this is not a weekly report.
+        self.assertEqual(report_period("weeklyish"), "other")
 
 
 class QueryIdTest(unittest.TestCase):
@@ -468,6 +684,53 @@ class DashboardServerTest(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError) as caught:
             self.post("/api/overview", {"value": "keep"})
         self.assertEqual(caught.exception.code, 404)
+
+    def test_query_plan_endpoint(self):
+        status, body = self.get("/api/query-plan?since_hours=48")
+        self.assertEqual(status, 200)
+        payload = json.loads(body)
+        sources = {entry["source"] for entry in payload["plans"]["daily"]}
+        self.assertIn("arxiv", sources)
+        self.assertIn("openalex", sources)
+
+    def test_saving_queries_over_http(self):
+        _, body = self.get("/api/queries")
+        token = json.loads(body)["token"]
+
+        status, saved = self.post(
+            "/api/queries", {"token": token, "queries": {"daily": ["edited"], "weekly": []}}
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(saved["editable"]["daily"], ["edited"])
+        self.assertEqual(
+            yaml.safe_load(self.settings.config_path.read_text(encoding="utf-8"))["queries"],
+            {"daily": ["edited"], "weekly": []},
+        )
+
+    def test_a_stale_token_conflicts(self):
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            self.post(
+                "/api/queries", {"token": "stale", "queries": {"daily": ["x"], "weekly": []}}
+            )
+        self.assertEqual(caught.exception.code, 409)
+
+    def test_an_invalid_query_is_a_bad_request(self):
+        _, body = self.get("/api/queries")
+        token = json.loads(body)["token"]
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            self.post(
+                "/api/queries", {"token": token, "queries": {"daily": [""], "weekly": []}}
+            )
+        self.assertEqual(caught.exception.code, 400)
+
+    def test_query_writes_share_the_csrf_guard(self):
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            self.post(
+                "/api/queries",
+                {"token": "x", "queries": {}},
+                {"Origin": "https://evil.example.com"},
+            )
+        self.assertEqual(caught.exception.code, 403)
 
     def test_oversized_bodies_are_refused(self):
         with self.assertRaises(urllib.error.HTTPError) as caught:

@@ -36,16 +36,18 @@ class OpenReviewCollector:
             headers["Authorization"] = f"Bearer {token}"
         self.client = httpx.Client(timeout=30, headers=headers)
 
+    @staticmethod
+    def search_params(query: str, since: datetime, limit: int = 25) -> dict[str, str | int]:
+        """The request this collector sends. Shared with the dashboard preview."""
+        return {
+            "query": query,
+            "source": "forum",
+            "sort": "tmdate:desc",
+            "limit": min(limit, 1000),
+        }
+
     def search(self, query: str, since: datetime, limit: int = 25) -> list[PaperCandidate]:
-        response = self.client.get(
-            self.endpoint,
-            params={
-                "query": query,
-                "source": "forum",
-                "sort": "tmdate:desc",
-                "limit": min(limit, 1000),
-            },
-        )
+        response = self.client.get(self.endpoint, params=self.search_params(query, since, limit))
         response.raise_for_status()
         results: list[PaperCandidate] = []
         for note in response.json().get("notes", []):

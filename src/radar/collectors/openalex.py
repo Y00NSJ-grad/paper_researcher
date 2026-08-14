@@ -65,8 +65,10 @@ class OpenAlexCollector:
             after=self._mark_request,
         )
 
-    def search(self, query: str, since: datetime, limit: int = 25) -> list[PaperCandidate]:
-        params: dict[str, str | int] = {
+    @staticmethod
+    def search_params(query: str, since: datetime, limit: int = 25) -> dict[str, str | int]:
+        """The request this collector sends. Shared with the dashboard preview."""
+        return {
             "search": query,
             "filter": f"from_publication_date:{since.date().isoformat()},has_abstract:true",
             "sort": "publication_date:desc",
@@ -76,6 +78,9 @@ class OpenAlexCollector:
                 "abstract_inverted_index,cited_by_count,ids,updated_date"
             ),
         }
+
+    def search(self, query: str, since: datetime, limit: int = 25) -> list[PaperCandidate]:
+        params = self.search_params(query, since, limit)
         if self.api_key:
             params["api_key"] = self.api_key
         if self.email:

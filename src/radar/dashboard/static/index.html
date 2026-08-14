@@ -124,21 +124,22 @@
             <option value="read">Read</option>
           </select>
         </label>
-        <label class="field">
-          <span>정렬</span>
-          <select id="f-sort">
-            <option value="score">점수</option>
-            <option value="first_seen">수집일</option>
-            <option value="published">발행일</option>
-            <option value="citations">인용수</option>
-          </select>
-        </label>
       </div>
       <div class="split">
         <section class="card list-card">
-          <header class="card-head">
-            <h2>논문</h2>
-            <p class="card-sub" id="papers-count">불러오는 중…</p>
+          <header class="card-head card-head-row">
+            <div class="card-head-text">
+              <h2>논문</h2>
+              <p class="card-sub" id="papers-count">불러오는 중…</p>
+            </div>
+            <label class="field inline">
+              <span>정렬</span>
+              <select id="f-sort">
+                <option value="score">점수순</option>
+                <option value="first_seen">수집일자 최신순</option>
+                <option value="published">발행일자 최신순</option>
+              </select>
+            </label>
           </header>
           <div id="paper-list" class="paper-list"></div>
           <div class="pager" id="paper-pager"></div>
@@ -151,6 +152,38 @@
 
     <!-- 쿼리 -->
     <section class="view" id="view-queries" role="tabpanel" hidden>
+      <section class="card">
+        <header class="card-head card-head-row">
+          <div class="card-head-text">
+            <h2>쿼리 편집</h2>
+            <p class="card-sub" id="editor-sub"></p>
+          </div>
+          <div class="editor-actions">
+            <button type="button" class="ghost" id="q-revert">되돌리기</button>
+            <button type="button" class="ghost primary" id="q-save">저장</button>
+          </div>
+        </header>
+        <div id="query-editor"></div>
+        <p class="verdict-note" id="editor-note"></p>
+      </section>
+
+      <section class="card">
+        <header class="card-head card-head-row">
+          <div class="card-head-text">
+            <h2>소스별 실제 요청</h2>
+            <p class="card-sub" id="plan-sub"></p>
+          </div>
+          <label class="field inline">
+            <span>그룹</span>
+            <select id="plan-group">
+              <option value="daily">daily</option>
+              <option value="weekly">weekly</option>
+            </select>
+          </label>
+        </header>
+        <div id="query-plan"></div>
+      </section>
+
       <section class="card">
         <header class="card-head">
           <h2>쿼리별 수확량</h2>
@@ -254,6 +287,18 @@
 
     <!-- 리포트 -->
     <section class="view" id="view-reports" role="tabpanel" hidden>
+      <div class="filters">
+        <label class="field">
+          <span>주기</span>
+          <select id="r-period">
+            <option value="">전체 보기</option>
+            <option value="monthly">Monthly</option>
+            <option value="weekly">Weekly</option>
+            <option value="daily">Daily</option>
+          </select>
+        </label>
+        <p class="filter-note" id="reports-note"></p>
+      </div>
       <div class="split">
         <section class="card list-card">
           <header class="card-head">
