@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import random
 import re
-from collections.abc import Sequence
+import time
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
+
+import httpx
 
 from radar.models import PaperCandidate
 from radar.text import normalize_title
@@ -44,6 +49,73 @@ def content_value(content: dict[str, Any], key: str, default: Any = None) -> Any
     if isinstance(value, dict) and "value" in value:
         return value["value"]
     return value
+
+
+@dataclass(frozen=True, slots=True)
+class RetryPolicy:
+    """How long a collector keeps trying an endpoint that is throttling or down.
+
+    Upstream throttles routinely outlast a handful of seconds, and a collector
+    that gives up inside one loses a whole day of papers for that source. The
+    defaults spend roughly five minutes before conceding.
+    """
+
+    max_attempts: int = 5
+    backoff_base_seconds: float = 20.0
+    max_backoff_seconds: float = 180.0
+
+    def delay_for(self, attempt: int) -> float:
+        delay = min(self.backoff_base_seconds * (2**attempt), self.max_backoff_seconds)
+        # Jitter keeps a retry off the exact second a throttle window resets, and
+        # keeps repeated daily runs from retrying in lockstep with each other.
+        return delay * random.uniform(0.8, 1.2)
+
+
+def is_retryable(status_code: int) -> bool:
+    """Throttling and upstream faults are worth waiting out; 4xx mistakes are not."""
+    return status_code == 429 or status_code >= 500
+
+
+def send_with_retry(
+    send: Callable[[], httpx.Response],
+    policy: RetryPolicy,
+    before: Callable[[], None] | None = None,
+    after: Callable[[], None] | None = None,
+) -> httpx.Response:
+    """Send a request, waiting out throttles and upstream faults.
+
+    `before`/`after` carry each collector's own request spacing bookkeeping, which
+    has to run around every attempt including the ones that time out.
+    """
+    for attempt in range(policy.max_attempts):
+        if before:
+            before()
+        try:
+            response = send()
+        except httpx.TimeoutException:
+            if after:
+                after()
+            if attempt + 1 >= policy.max_attempts:
+                raise
+            time.sleep(policy.delay_for(attempt))
+            continue
+        if after:
+            after()
+
+        if not is_retryable(response.status_code):
+            response.raise_for_status()
+            return response
+        if attempt + 1 >= policy.max_attempts:
+            response.raise_for_status()
+
+        retry_after = response.headers.get("Retry-After")
+        try:
+            retry_delay = float(retry_after) if retry_after else 0.0
+        except ValueError:
+            retry_delay = 0.0
+        time.sleep(max(retry_delay, policy.delay_for(attempt)))
+
+    raise RuntimeError("retry loop exhausted")
 
 
 def _query_parts(query: str) -> list[tuple[str, str]]:

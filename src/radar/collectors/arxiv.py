@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import random
 import time
 import xml.etree.ElementTree as ET
 from collections.abc import Iterable, Sequence
@@ -9,7 +8,7 @@ from urllib.parse import quote_plus
 
 import httpx
 
-from radar.collectors.common import net_terms, route_to_query
+from radar.collectors.common import RetryPolicy, net_terms, route_to_query, send_with_retry
 from radar.models import PaperCandidate
 from radar.text import normalize_arxiv_id
 
@@ -76,9 +75,7 @@ class ArxivCollector:
         )
         self.anchors = list(anchors or [])
         self.min_interval_seconds = min_interval_seconds
-        self.max_attempts = max_attempts
-        self.backoff_base_seconds = backoff_base_seconds
-        self.max_backoff_seconds = max_backoff_seconds
+        self.retry = RetryPolicy(max_attempts, backoff_base_seconds, max_backoff_seconds)
         self._last_request_at = 0.0
 
     def _respect_rate_limit(self) -> None:
@@ -86,40 +83,16 @@ class ArxivCollector:
         if elapsed < self.min_interval_seconds:
             time.sleep(self.min_interval_seconds - elapsed)
 
-    def _backoff_seconds(self, attempt: int) -> float:
-        delay = min(self.backoff_base_seconds * (2**attempt), self.max_backoff_seconds)
-        # Jitter keeps a retry from landing on the same second as the throttle
-        # window it is waiting out, and keeps repeated runs out of lockstep.
-        return delay * random.uniform(0.8, 1.2)
+    def _mark_request(self) -> None:
+        self._last_request_at = time.monotonic()
 
     def _get_with_retry(self, url: str) -> httpx.Response:
-        for attempt in range(self.max_attempts):
-            self._respect_rate_limit()
-            try:
-                response = self.client.get(url)
-            except httpx.TimeoutException:
-                self._last_request_at = time.monotonic()
-                if attempt + 1 >= self.max_attempts:
-                    raise
-                time.sleep(self._backoff_seconds(attempt))
-                continue
-
-            self._last_request_at = time.monotonic()
-            retryable = response.status_code == 429 or response.status_code >= 500
-            if not retryable:
-                response.raise_for_status()
-                return response
-            if attempt + 1 >= self.max_attempts:
-                response.raise_for_status()
-
-            retry_after = response.headers.get("Retry-After")
-            try:
-                retry_delay = float(retry_after) if retry_after else 0.0
-            except ValueError:
-                retry_delay = 0.0
-            time.sleep(max(retry_delay, self._backoff_seconds(attempt)))
-
-        raise RuntimeError("arXiv retry loop exhausted")
+        return send_with_retry(
+            lambda: self.client.get(url),
+            self.retry,
+            before=self._respect_rate_limit,
+            after=self._mark_request,
+        )
 
     def search(self, query: str, since: datetime, limit: int = 25) -> list[PaperCandidate]:
         return self.search_many([query], since, limit)[query]

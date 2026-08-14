@@ -3,10 +3,12 @@ import tempfile
 import unittest
 from datetime import UTC, datetime
 from pathlib import Path
+from unittest import mock
 
 import httpx
 
 from radar.collectors.arxiv import ArxivCollector
+from radar.collectors.common import RetryPolicy, send_with_retry
 from radar.collectors.huggingface import HuggingFaceCollector
 from radar.collectors.ieee_xplore import (
     IEEE_JOURNALS,
@@ -165,17 +167,57 @@ class CollectorTest(unittest.TestCase):
 
         self.assertEqual([paper.arxiv_id for paper in results["SAGIN routing"]], ["2601.00009"])
 
-    def test_arxiv_backoff_is_capped_and_jittered(self):
-        collector = ArxivCollector(
-            "test-agent",
-            min_interval_seconds=0,
-            backoff_base_seconds=20.0,
-            max_backoff_seconds=180.0,
-        )
-        # 20 -> 40 -> 80 -> 160 -> capped, so the retry window outlasts a short
-        # arXiv throttle instead of giving up inside two minutes.
-        self.assertGreaterEqual(collector._backoff_seconds(3), 160 * 0.8)
-        self.assertLessEqual(collector._backoff_seconds(9), 180 * 1.2)
+    def test_retry_backoff_is_capped_and_jittered(self):
+        policy = RetryPolicy(max_attempts=5, backoff_base_seconds=20.0, max_backoff_seconds=180.0)
+        # 20 -> 40 -> 80 -> 160 -> capped, so the window outlasts a short throttle
+        # instead of conceding inside a few seconds.
+        self.assertGreaterEqual(policy.delay_for(3), 160 * 0.8)
+        self.assertLessEqual(policy.delay_for(9), 180 * 1.2)
+
+    def test_every_retrying_collector_waits_out_a_throttle(self):
+        """OpenAlex and Semantic Scholar conceded after ~3s, losing a source for the day."""
+        policies = {
+            "arxiv": ArxivCollector("test-agent").retry,
+            "openalex": OpenAlexCollector(None, None, "test-agent").retry,
+            "semantic_scholar": SemanticScholarCollector(None, "test-agent").retry,
+        }
+        for name, policy in policies.items():
+            with self.subTest(collector=name):
+                self.assertGreaterEqual(policy.max_attempts, 4, f"{name} gives up too soon")
+                self.assertGreaterEqual(
+                    policy.backoff_base_seconds, 5.0, f"{name} retries too eagerly"
+                )
+
+    def test_send_with_retry_honours_retry_after_over_backoff(self):
+        request = httpx.Request("GET", "https://example.test")
+        slept: list[float] = []
+        responses = [
+            httpx.Response(429, headers={"Retry-After": "7"}, request=request),
+            httpx.Response(200, request=request),
+        ]
+
+        with mock.patch("time.sleep", slept.append):
+            response = send_with_retry(
+                lambda: responses.pop(0),
+                RetryPolicy(max_attempts=3, backoff_base_seconds=1.0, max_backoff_seconds=1.0),
+            )
+
+        self.assertEqual(response.status_code, 200)
+        # Retry-After wins over our own backoff when the server names a delay.
+        self.assertEqual(slept, [7.0])
+
+    def test_send_with_retry_gives_up_on_a_client_mistake(self):
+        calls = 0
+
+        def send():
+            nonlocal calls
+            calls += 1
+            return httpx.Response(400, request=httpx.Request("GET", "https://example.test"))
+
+        with self.assertRaises(httpx.HTTPStatusError):
+            send_with_retry(send, RetryPolicy(max_attempts=4, backoff_base_seconds=0))
+        # A 400 will not fix itself; retrying it only delays the run.
+        self.assertEqual(calls, 1)
 
     def test_semantic_scholar_maps_metadata_and_date_filter(self):
         calls = 0
