@@ -3,10 +3,12 @@ import tempfile
 import unittest
 from datetime import UTC, datetime
 from pathlib import Path
+from unittest import mock
 
 import httpx
 
 from radar.collectors.arxiv import ArxivCollector
+from radar.collectors.common import RetryPolicy, send_with_retry
 from radar.collectors.huggingface import HuggingFaceCollector
 from radar.collectors.ieee_xplore import (
     IEEE_JOURNALS,
@@ -92,6 +94,130 @@ class CollectorTest(unittest.TestCase):
             [paper.arxiv_id for paper in results['"UAV trajectory" control']],
             ["2608.00002"],
         )
+
+    def test_arxiv_casts_one_date_bounded_or_net_over_the_anchors(self):
+        captured = {}
+
+        def handler(request):
+            captured["search_query"] = request.url.params["search_query"]
+            return httpx.Response(200, text='<feed xmlns="http://www.w3.org/2005/Atom"></feed>')
+
+        collector = ArxivCollector(
+            "test-agent",
+            ["SAGIN", "LEO satellite"],
+            min_interval_seconds=0,
+        )
+        collector.client = client_with(handler)
+        collector.search_many(["SAGIN routing", '"LEO satellite" handover'], SINCE)
+
+        search_query = captured["search_query"]
+        # Anchors are ORed, never ANDed word by word: ANDing collapses recall to
+        # zero inside a daily window.
+        self.assertIn('all:SAGIN OR all:"LEO satellite"', search_query)
+        self.assertNotIn("all:routing", search_query)
+        self.assertIn("AND submittedDate:[202608080000 TO ", search_query)
+
+    def test_arxiv_keeps_on_topic_papers_that_match_no_query(self):
+        def handler(request):
+            return httpx.Response(
+                200,
+                text="""<feed xmlns="http://www.w3.org/2005/Atom">
+                  <entry>
+                    <id>https://arxiv.org/abs/2608.00003v1</id>
+                    <title>Orbital Relay Scheduling</title>
+                    <summary>A satellite network study.</summary>
+                    <published>2026-08-09T00:00:00+00:00</published>
+                    <updated>2026-08-09T00:00:00+00:00</updated>
+                    <author><name>C. Author</name></author>
+                  </entry>
+                </feed>""",
+            )
+
+        collector = ArxivCollector("test-agent", ["satellite network"], min_interval_seconds=0)
+        collector.client = client_with(handler)
+        results = collector.search_many(["SAGIN routing", "UAV offloading"], SINCE)
+
+        # The net is wider than any one query, so scoring — not the query text —
+        # gets the final say on a paper the net legitimately caught.
+        self.assertEqual(
+            [paper.arxiv_id for paper in results["SAGIN routing"]],
+            ["2608.00003"],
+        )
+        self.assertEqual(results["UAV offloading"], [])
+
+    def test_arxiv_keeps_a_paper_revised_inside_the_window(self):
+        def handler(request):
+            return httpx.Response(
+                200,
+                text="""<feed xmlns="http://www.w3.org/2005/Atom">
+                  <entry>
+                    <id>https://arxiv.org/abs/2601.00009v2</id>
+                    <title>SAGIN Routing</title>
+                    <summary>A revised study.</summary>
+                    <published>2026-01-04T00:00:00+00:00</published>
+                    <updated>2026-08-09T00:00:00+00:00</updated>
+                    <author><name>D. Author</name></author>
+                  </entry>
+                </feed>""",
+            )
+
+        collector = ArxivCollector("test-agent", ["SAGIN"], min_interval_seconds=0)
+        collector.client = client_with(handler)
+        results = collector.search_many(["SAGIN routing"], SINCE)
+
+        self.assertEqual([paper.arxiv_id for paper in results["SAGIN routing"]], ["2601.00009"])
+
+    def test_retry_backoff_is_capped_and_jittered(self):
+        policy = RetryPolicy(max_attempts=5, backoff_base_seconds=20.0, max_backoff_seconds=180.0)
+        # 20 -> 40 -> 80 -> 160 -> capped, so the window outlasts a short throttle
+        # instead of conceding inside a few seconds.
+        self.assertGreaterEqual(policy.delay_for(3), 160 * 0.8)
+        self.assertLessEqual(policy.delay_for(9), 180 * 1.2)
+
+    def test_every_retrying_collector_waits_out_a_throttle(self):
+        """OpenAlex and Semantic Scholar conceded after ~3s, losing a source for the day."""
+        policies = {
+            "arxiv": ArxivCollector("test-agent").retry,
+            "openalex": OpenAlexCollector(None, None, "test-agent").retry,
+            "semantic_scholar": SemanticScholarCollector(None, "test-agent").retry,
+        }
+        for name, policy in policies.items():
+            with self.subTest(collector=name):
+                self.assertGreaterEqual(policy.max_attempts, 4, f"{name} gives up too soon")
+                self.assertGreaterEqual(
+                    policy.backoff_base_seconds, 5.0, f"{name} retries too eagerly"
+                )
+
+    def test_send_with_retry_honours_retry_after_over_backoff(self):
+        request = httpx.Request("GET", "https://example.test")
+        slept: list[float] = []
+        responses = [
+            httpx.Response(429, headers={"Retry-After": "7"}, request=request),
+            httpx.Response(200, request=request),
+        ]
+
+        with mock.patch("time.sleep", slept.append):
+            response = send_with_retry(
+                lambda: responses.pop(0),
+                RetryPolicy(max_attempts=3, backoff_base_seconds=1.0, max_backoff_seconds=1.0),
+            )
+
+        self.assertEqual(response.status_code, 200)
+        # Retry-After wins over our own backoff when the server names a delay.
+        self.assertEqual(slept, [7.0])
+
+    def test_send_with_retry_gives_up_on_a_client_mistake(self):
+        calls = 0
+
+        def send():
+            nonlocal calls
+            calls += 1
+            return httpx.Response(400, request=httpx.Request("GET", "https://example.test"))
+
+        with self.assertRaises(httpx.HTTPStatusError):
+            send_with_retry(send, RetryPolicy(max_attempts=4, backoff_base_seconds=0))
+        # A 400 will not fix itself; retrying it only delays the run.
+        self.assertEqual(calls, 1)
 
     def test_semantic_scholar_maps_metadata_and_date_filter(self):
         calls = 0
@@ -306,6 +432,74 @@ class CollectorTest(unittest.TestCase):
         self.assertEqual(calls, 1)
         self.assertEqual(first[0].arxiv_id, "2608.00001")
         self.assertEqual(second[0].code_url, "https://github.com/example/code")
+
+    def test_huggingface_gates_the_feed_on_anchors_not_on_every_query_word(self):
+        def handler(request):
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "publishedAt": datetime.now(UTC).isoformat(),
+                        "paper": {
+                            "id": "2608.00010",
+                            "title": "Aerial Image-Goal Navigation",
+                            "summary": "A world model for an unmanned aerial vehicle.",
+                            "authors": [{"name": "H. Author"}],
+                        },
+                    },
+                    {
+                        "publishedAt": datetime.now(UTC).isoformat(),
+                        "paper": {
+                            "id": "2608.00011",
+                            "title": "Better Chatbot Alignment",
+                            "summary": "Preference tuning for dialogue agents.",
+                            "authors": [{"name": "I. Author"}],
+                        },
+                    },
+                ],
+            )
+
+        collector = HuggingFaceCollector(
+            "test-agent",
+            anchors=["unmanned aerial vehicle"],
+        )
+        collector.client = client_with(handler)
+        since = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+        papers = collector.search("UAV edge computing reinforcement learning offloading", since)
+
+        # The paper shares no full word run with the query, but it is on topic, so
+        # the anchor gate keeps it and scoring gets to decide.
+        self.assertEqual([paper.arxiv_id for paper in papers], ["2608.00010"])
+
+    def test_huggingface_batches_queries_and_routes_each_paper_once(self):
+        calls = 0
+
+        def handler(request):
+            nonlocal calls
+            calls += 1
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "publishedAt": datetime.now(UTC).isoformat(),
+                        "paper": {
+                            "id": "2608.00012",
+                            "title": "Satellite Routing",
+                            "summary": "A satellite network study.",
+                            "authors": [{"name": "J. Author"}],
+                        },
+                    }
+                ],
+            )
+
+        collector = HuggingFaceCollector("test-agent", anchors=["satellite network"])
+        collector.client = client_with(handler)
+        since = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+        results = collector.search_many(["satellite routing", "UAV offloading"], since)
+
+        self.assertEqual(calls, 1)
+        self.assertEqual([paper.arxiv_id for paper in results["satellite routing"]], ["2608.00012"])
+        self.assertEqual(results["UAV offloading"], [])
 
     def test_huggingface_treats_current_date_400_as_feed_not_ready(self):
         calls = 0

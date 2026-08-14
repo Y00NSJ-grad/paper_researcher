@@ -1,24 +1,21 @@
 from __future__ import annotations
 
-import re
 import time
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
 
-from radar.collectors.common import parse_datetime
+from radar.collectors.common import net_terms, parse_datetime, route_to_query
 from radar.models import PaperCandidate
-from radar.text import normalize_arxiv_id
+from radar.text import contains_term, normalize_arxiv_id
 
-
-def _query_terms(query: str) -> list[str]:
-    matches = re.findall(r'"([^"]+)"|([A-Za-z0-9]+)', query)
-    return [
-        first or second
-        for first, second in matches
-        if len(first or second) > 1 and (first or second).lower() not in {"and", "or", "not"}
-    ]
+# The daily feed is curated and small (roughly 15-40 papers a day), so it is
+# fetched whole and filtered locally. Requiring every word of a query to appear
+# matched nothing at all; the feed is gated on the topic anchors instead, exactly
+# like the arXiv net, and `radar.scoring` makes the final call.
+HAYSTACK_KEYS = ("title", "summary", "ai_summary", "ai_keywords")
 
 
 class HuggingFaceCollector:
@@ -29,6 +26,7 @@ class HuggingFaceCollector:
         self,
         user_agent: str,
         token: str | None = None,
+        anchors: Sequence[str] | None = None,
         max_attempts: int = 3,
         backoff_base_seconds: float = 0.5,
     ):
@@ -36,32 +34,47 @@ class HuggingFaceCollector:
         if token:
             headers["Authorization"] = f"Bearer {token}"
         self.client = httpx.Client(timeout=30, headers=headers)
+        self.anchors = list(anchors or [])
         self.max_attempts = max_attempts
         self.backoff_base_seconds = backoff_base_seconds
         self._feed_cache: dict[str, list[dict[str, Any]]] = {}
         self._failed_dates: set[str] = set()
 
     def search(self, query: str, since: datetime, limit: int = 25) -> list[PaperCandidate]:
-        terms = [term.lower() for term in _query_terms(query)]
-        results: list[PaperCandidate] = []
+        return self.search_many([query], since, limit)[query]
+
+    def search_many(
+        self,
+        queries: list[str],
+        since: datetime,
+        limit: int = 25,
+    ) -> dict[str, list[PaperCandidate]]:
+        if not queries:
+            return {}
+        net = net_terms(self.anchors, queries)
+        results: dict[str, list[PaperCandidate]] = {query: [] for query in queries}
+        for row in self._feed_since(since):
+            paper = row.get("paper") or row
+            haystack = " ".join(str(paper.get(key) or "") for key in HAYSTACK_KEYS)
+            if net and not any(contains_term(haystack, term) for term in net):
+                continue
+            candidate = self._candidate(row)
+            if candidate.published_at and candidate.published_at < since:
+                continue
+            results[route_to_query(candidate, queries)].append(candidate)
+        for bucket in results.values():
+            bucket.sort(key=lambda item: item.published_at or since, reverse=True)
+        return results
+
+    def _feed_since(self, since: datetime) -> list[dict[str, Any]]:
+        """Every feed entry from `since` to today, fetched once per date."""
+        rows: list[dict[str, Any]] = []
         cursor = since.astimezone(UTC).date()
         today = datetime.now(UTC).date()
         while cursor <= today:
-            for row in self._daily_feed(cursor.isoformat()):
-                paper = row.get("paper") or row
-                haystack = " ".join(
-                    str(paper.get(key) or "")
-                    for key in ("title", "summary", "ai_summary", "ai_keywords")
-                ).lower()
-                if terms and not all(term in haystack for term in terms):
-                    continue
-                candidate = self._candidate(row)
-                if candidate.published_at and candidate.published_at < since:
-                    continue
-                results.append(candidate)
+            rows.extend(self._daily_feed(cursor.isoformat()))
             cursor += timedelta(days=1)
-        results.sort(key=lambda item: item.published_at or since, reverse=True)
-        return results[:limit]
+        return rows
 
     def _daily_feed(self, date_key: str) -> list[dict[str, Any]]:
         if date_key in self._feed_cache:

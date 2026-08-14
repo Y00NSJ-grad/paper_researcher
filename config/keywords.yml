@@ -133,6 +133,15 @@ queries:
     - 'quantum reinforcement learning resource allocation'
     - 'airport scheduling reinforcement learning'
 
+# arXiv and Hugging Face are collected as one wide net over every `domains` term
+# plus these extras, and narrowed afterwards by `scoring`. List anchors here for
+# topics the queries care about that have no domain of their own.
+extra_anchors:
+  - vision-language-action
+  - diffusion policy
+  - quantum reinforcement learning
+  - airport scheduling
+
 scoring:
   minimum_relevant: 20
   title_multiplier: 1.35

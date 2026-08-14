@@ -22,6 +22,7 @@ systemd user timer → Python virtualenv → SQLite → Markdown/Slack
 - Daily Digest 및 7일/30일 Trend Map
 - Slack Incoming Webhook 전달
 - Ubuntu 사용자 systemd timer
+- 수집 데이터·쿼리 실적·점수 책정 과정을 확인하는 읽기 전용 로컬 대시보드
 
 ## 요구 사항
 
@@ -222,6 +223,76 @@ uv run paper-radar monthly --days 30
 OpenAI API key가 비어 있다면 `--summarize` 값과 관계없이 OpenAI 호출은 건너뜁니다.
 명시적으로 요약을 끄려면 `--summarize 0`을 사용합니다.
 
+## 로컬 대시보드
+
+SQLite에 쌓인 데이터, 쿼리 실적, 점수 책정 과정, Trend Map을 브라우저에서 확인합니다.
+
+```bash
+uv run paper-radar dashboard          # http://127.0.0.1:8765
+uv run paper-radar dashboard --port 9000
+```
+
+- 쓰기는 피드백 판정(`feedback` 테이블) 하나뿐입니다. 수집한 논문·점수·실행
+  기록은 대시보드에서 변경되지 않고, 파이프라인을 실행하지도 않습니다.
+- 기본적으로 loopback(`127.0.0.1`)에만 바인딩하고, `Host` 헤더가 loopback이
+  아닌 요청은 거부합니다. 외부 공개용이 아닙니다.
+- 표준 라이브러리 `http.server`만 사용하므로 추가 의존성이 없습니다.
+- 원격 Ubuntu 서버에서 실행 중이라면 SSH 터널로 접근합니다.
+
+  ```bash
+  ssh -N -L 8765:127.0.0.1:8765 user@server
+  ```
+
+탭 구성:
+
+| 탭 | 내용 |
+| --- | --- |
+| 개요 | 논문·버전·실행 건수, 수집 추이, 점수 분포, 소스별 수집량, 피드백 분류, `pipeline_runs` 기록 |
+| 논문 | 검색·소스·태그·기간·점수·피드백 필터, 점수순/수집일자순/발행일자순 정렬, 코드 공개·서베이 배지, 논문별 점수 책정 내역과 매칭 용어, 소스 버전, 매칭된 쿼리, Keep/Maybe/Reject/Read 기록 |
+| 쿼리 | 쿼리 추가·수정·삭제(`keywords.yml`에 저장), 소스별로 실제 전송되는 요청, 쿼리별 논문 수·실행 수·평균 점수, 설정에서 사라진 쿼리 표시 |
+| 스코어링 | 가중치와 보너스 규칙, 축별 태그·용어 목록, 임의 제목/초록 점수 시뮬레이터 |
+| 트렌드 맵 | 도메인 × 방법론/과업 히트맵, 태그 빈도, 반복 조합, 상위 도메인 추이 |
+| 리포트 | `outputs/` 아래 생성된 Markdown 리포트를 daily / weekly / monthly로 나눠 열람 |
+
+점수 책정 화면은 파이프라인과 동일한 `radar.scoring.explain_score`를 호출하므로,
+`keywords.yml`을 수정한 뒤 아직 재수집하지 않은 논문은 저장된 점수와 현재 규칙의
+점수 차이를 함께 표시합니다.
+
+### 쿼리 열람과 편집
+
+`쿼리` 탭의 **소스별 실제 요청**은 소스마다 무엇이 전송되는지 보여줍니다. 소스는
+두 부류로 나뉩니다.
+
+- **쿼리별 전송** — OpenAlex, Semantic Scholar, OpenReview, IEEE Xplore.
+  쿼리 문자열이 그대로 전달됩니다. 단 Semantic Scholar는 bulk 엔드포인트가 `-`를
+  NOT으로 읽기 때문에 하이픈을 공백으로 바꿔 보내며, 대시보드는 바뀐 값을 강조해
+  표시합니다.
+- **그물 1회** — arXiv, Hugging Face. 개별 쿼리를 **보내지 않습니다.**
+  arXiv는 절을 AND로 묶어서 단어 단위 쿼리가 48시간 창에서 0건이 되므로,
+  `domains`의 모든 용어와 `extra_anchors`, 그리고 쿼리의 인용구를 합친 하나의
+  OR 그물을 날짜 범위와 함께 보냅니다. 결과는 나중에 쿼리로 되배정되어 출처만
+  표시됩니다. 실제 전송되는 `search_query` 전문이 그대로 보입니다.
+
+미리보기는 수집기가 요청을 만들 때 쓰는 함수를 그대로 호출하므로 실제 요청과
+어긋날 수 없습니다.
+
+**쿼리 편집**에서 daily·weekly 쿼리를 추가·수정·삭제하고 저장하면
+`keywords.yml`의 `queries` 블록만 다시 씁니다. 주석과 다른 설정은 그대로 남고,
+내용이 같으면 파일은 바이트 단위로 동일하게 유지됩니다. 저장 전에 다시 파싱해
+왕복을 검증하고, 임시 파일에 쓴 뒤 원자적으로 교체합니다. 대시보드를 연 뒤
+편집기에서 `keywords.yml`을 직접 고쳤다면 저장은 409로 거부되므로 새로고침 후
+다시 저장하세요. 변경은 **다음 수집 실행부터** 적용됩니다.
+
+### 피드백 기록
+
+논문 상세에서 Keep / Maybe / Reject / Read를 눌러 판정을 남깁니다.
+
+- `feedback` 테이블에 **append**되며 이력이 남습니다. 가장 최근 행이 현재 판정이고,
+  필터와 집계는 이 값을 따릅니다. `기록 지우기`는 해당 논문의 이력을 삭제합니다.
+- 로컬 서버라도 다른 사이트가 브라우저를 통해 이 포트로 요청을 보낼 수 있으므로,
+  쓰기 요청은 `application/json` 본문(CORS preflight를 유발하고 이 서버는 응답하지
+  않음)과 loopback `Origin`을 함께 요구합니다. 폼 전송이나 교차 출처 요청은 403입니다.
+
 ## 설정 조정
 
 `config/keywords.yml`에서 다음 항목을 조정합니다.
@@ -229,7 +300,15 @@ OpenAI API key가 비어 있다면 `--summarize` 값과 관계없이 OpenAI 호�
 - `methods`, `domains`, `tasks`: 태그 및 가중치
 - `queries.daily`: 매일 실행하는 직접 교차 검색
 - `queries.weekly`: 넓은 탐색 검색
+- `extra_anchors`: 전용 도메인이 없는 주제를 수집망에 추가
 - `scoring.minimum_relevant`: DB와 Digest에 포함할 최소 점수
+
+arXiv와 Hugging Face는 쿼리 문자열로 직접 검색하지 않습니다. 쿼리의 모든 단어를
+AND로 묶으면 하루치 창에서 결과가 0건이 되기 때문에, 두 소스는 `domains` 전체 항목과
+`extra_anchors`를 OR로 묶은 하나의 넓은 수집망을 기간으로 한정해 던진 뒤 `scoring`이
+관련성을 판정합니다. 두 소스에서 쿼리 문자열은 수집된 논문을 어느 쿼리에 귀속시킬지
+정하는 출처 라벨로만 쓰입니다. 수집 범위를 넓히거나 좁히려면 `domains`와
+`extra_anchors`를 조정하세요. 나머지 소스는 쿼리 문자열을 그대로 검색어로 사용합니다.
 
 첫 2주 동안은 검색식과 임계값을 조정하는 보정 기간으로 보는 것이 좋습니다.
 

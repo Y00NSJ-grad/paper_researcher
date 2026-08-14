@@ -135,6 +135,21 @@ class IeeeXploreCollector:
         self.api_guard = IeeeApiGuard(quota_db_path)
         self.client = httpx.Client(timeout=30, headers={"User-Agent": user_agent})
 
+    @staticmethod
+    def search_params(
+        query: str, publication_title: str, per_journal: int
+    ) -> dict[str, str | int]:
+        """One journal's request. Shared with the dashboard preview, minus the key."""
+        return {
+            "format": "json",
+            "querytext": query,
+            "publication_title": publication_title,
+            "start_record": 1,
+            "max_records": per_journal,
+            "sort_field": "article_number",
+            "sort_order": "desc",
+        }
+
     def search(self, query: str, since: datetime, limit: int = 25) -> list[PaperCandidate]:
         per_journal = max(1, min(200, (limit + len(self.journals) - 1) // len(self.journals)))
         results: list[PaperCandidate] = []
@@ -145,13 +160,7 @@ class IeeeXploreCollector:
                 self.endpoint,
                 params={
                     "apikey": self.api_key,
-                    "format": "json",
-                    "querytext": query,
-                    "publication_title": publication_title,
-                    "start_record": 1,
-                    "max_records": per_journal,
-                    "sort_field": "article_number",
-                    "sort_order": "desc",
+                    **self.search_params(query, publication_title, per_journal),
                 },
             )
             response.raise_for_status()

@@ -4,6 +4,7 @@ import argparse
 import logging
 
 from radar.config import Settings
+from radar.dashboard import serve
 from radar.runner import RadarRunner
 
 
@@ -28,6 +29,12 @@ def build_parser() -> argparse.ArgumentParser:
     monthly.add_argument("--dry-run", action="store_true")
 
     subparsers.add_parser("init-db", help="Initialize the SQLite database")
+
+    dashboard = subparsers.add_parser(
+        "dashboard", help="Serve the read-only local dashboard on the loopback interface"
+    )
+    dashboard.add_argument("--host", default="127.0.0.1")
+    dashboard.add_argument("--port", type=int, default=8765)
     return parser
 
 
@@ -40,7 +47,12 @@ def main() -> None:
     # httpx logs full request URLs at INFO, which would expose Slack webhook secrets.
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
-    runner = RadarRunner(Settings.from_env())
+    settings = Settings.from_env()
+    if args.command == "dashboard":
+        serve(settings, host=args.host, port=args.port)
+        return
+
+    runner = RadarRunner(settings)
 
     if args.command == "daily":
         path = runner.collect_and_report(

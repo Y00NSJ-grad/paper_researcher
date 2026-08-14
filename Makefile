@@ -1,4 +1,4 @@
-.PHONY: install test lint init-db daily weekly monthly
+.PHONY: install test lint init-db daily weekly monthly dashboard
 
 install:
 	uv sync --extra dev
@@ -20,3 +20,6 @@ weekly:
 
 monthly:
 	uv run paper-radar monthly --dry-run
+
+dashboard:
+	uv run paper-radar dashboard
