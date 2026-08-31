@@ -814,7 +814,6 @@ async function renderQueries() {
       queriesState.draft = structuredClone(queriesState.data.editable);
       paintEditor();
     });
-    document.getElementById("plan-group").addEventListener("change", paintPlan);
   }
   let data;
   try {
@@ -827,7 +826,6 @@ async function renderQueries() {
   queriesState.token = data.token;
   queriesState.draft = structuredClone(data.editable);
   paintEditor();
-  loadPlan();
   paintQueryStats(data);
 }
 
@@ -844,24 +842,6 @@ function paintQueryStats(data) {
       note: `${item.group} · 평균 ${item.mean_score}점 · ${item.runs}회 실행`,
     })), { unit: "편" });
 
-  const table = el("table", { class: "data" }, [
-    el("thead", {}, [el("tr", {}, [
-      el("th", { text: "쿼리" }), el("th", { text: "그룹" }), el("th", { text: "논문" }),
-      el("th", { text: "실행" }), el("th", { text: "평균 점수" }), el("th", { text: "최고 점수" }),
-      el("th", { text: "최근 매칭" }), el("th", { text: "상태" }),
-    ])]),
-    el("tbody", {}, data.items.map((item) => el("tr", {}, [
-      el("td", { class: "wrap" }, [el("code", { text: item.text })]),
-      el("td", { text: item.group }),
-      el("td", { class: "num", text: item.papers }),
-      el("td", { class: "num", text: item.runs }),
-      el("td", { class: "num", text: item.mean_score || "—" }),
-      el("td", { class: "num", text: item.best_score || "—" }),
-      el("td", { class: "nowrap", text: dateLabel(item.last_seen) }),
-      el("td", {}, [el("span", { class: "pill", text: item.configured ? "설정에 있음" : "설정에서 제거됨" })]),
-    ]))),
-  ]);
-  clear(document.getElementById("table-queries")).append(table);
 }
 
 /* ---- 쿼리 편집: the draft lives in memory until 저장 writes keywords.yml ---- */
@@ -946,7 +926,6 @@ async function saveQueries() {
     paintEditor();
     note.textContent = "keywords.yml에 저장했습니다. 다음 수집부터 적용됩니다.";
     paintQueryStats(result);
-    loadPlan();
   } catch (error) {
     note.classList.add("error");
     note.textContent = "저장하지 못했습니다: " + error.message;
@@ -954,102 +933,51 @@ async function saveQueries() {
   }
 }
 
-/* ---- 소스별 실제 요청 ---- */
+// -------------------------------------------------------------------- 태그 뷰
 
-const planState = { data: null };
+const AXES = [
+  { axis: "methods", label: "방법론 (methods)", glyph: "▲" },
+  { axis: "domains", label: "도메인 (domains)", glyph: "◆" },
+  { axis: "tasks", label: "과업 (tasks)", glyph: "■" },
+];
+const tagsState = { data: null, draft: null, token: "", bound: false };
 
-async function loadPlan() {
-  try {
-    planState.data = await api("/api/query-plan", { since_hours: 48 });
-  } catch (error) {
-    clear(document.getElementById("query-plan")).append(errorBox(error.message));
-    return;
+async function renderTags() {
+  if (!tagsState.bound) {
+    tagsState.bound = true;
+    document.getElementById("t-save").addEventListener("click", saveTags);
+    document.getElementById("t-revert").addEventListener("click", () => {
+      tagsState.draft = structuredClone(tagsState.data.draft);
+      paintTagEditor();
+    });
   }
-  paintPlan();
-}
-
-function paintPlan() {
-  const data = planState.data;
-  if (!data) return;
-  const group = document.getElementById("plan-group").value;
-  const container = clear(document.getElementById("query-plan"));
-  document.getElementById("plan-sub").textContent =
-    `최근 ${data.since_hours}시간 기준 · 쿼리당 최대 ${data.limit_per_query}건 · 앵커 ${data.anchors.length}개`;
-
-  const entries = data.plans[group] || [];
-  if (!entries.length) {
-    container.append(el("p", { class: "empty", text: "이 그룹에는 쿼리가 없습니다." }));
-    return;
-  }
-  for (const entry of entries) {
-    const head = el("div", { class: "plan-head" }, [
-      el("h3", { text: entry.source }),
-      el("span", {
-        class: "pill mode-" + entry.mode,
-        text: entry.mode === "net" ? "그물 1회" : "쿼리별 전송",
-      }),
-      entry.request_count !== null && entry.request_count !== undefined
-        ? el("span", { class: "pill", text: `요청 ${entry.request_count}회` })
-        : el("span", { class: "pill", text: "날짜별 피드" }),
-      entry.enabled ? null : el("span", { class: "pill disabled", text: "비활성" }),
-      el("span", { class: "plan-endpoint", text: entry.endpoint }),
-    ]);
-    const card = el("div", { class: "plan-source" }, [
-      head,
-      el("p", { class: "plan-note", text: entry.note }),
-    ]);
-
-    if (entry.mode === "net") {
-      // The expression is the authoritative form where one exists; listing the
-      // terms as well would just repeat it, duplicates and all.
-      if (entry.expression) {
-        card.append(el("pre", { class: "expression", text: entry.expression }));
-      } else {
-        card.append(el("div", { class: "net-terms" },
-          entry.net_terms.slice(0, 60).map((term) => el("span", { class: "term", text: term }))));
-        if (entry.net_terms.length > 60) {
-          card.append(el("p", { class: "note", text: `외 ${entry.net_terms.length - 60}개` }));
-        }
-      }
-    } else {
-      card.append(el("table", { class: "plan-table" }, [
-        el("thead", {}, [el("tr", {}, [
-          el("th", { text: "설정한 쿼리" }),
-          el("th", { text: "실제로 보내는 값" }),
-        ])]),
-        el("tbody", {}, entry.requests.map((request) => el("tr", {}, [
-          el("td", {}, [el("code", { text: request.query })]),
-          el("td", {}, [
-            el("code", {
-              class: request.sent === request.query ? "" : "plan-changed",
-              text: request.sent,
-            }),
-          ]),
-        ]))),
-      ]));
-      if (entry.journals) {
-        card.append(el("p", {
-          class: "note",
-          text: `저널: ${entry.journals.join(", ")} — 쿼리마다 저널 수만큼 요청합니다.`,
-        }));
-      }
-    }
-    container.append(card);
-  }
-}
-
-// -------------------------------------------------------------- 스코어링 뷰
-
-let scoringLoaded = false;
-
-async function renderScoring() {
   let data;
   try {
     data = await api("/api/scoring");
   } catch (error) {
-    clear(document.getElementById("scoring-axes")).append(errorBox(error.message));
+    clear(document.getElementById("tag-editor")).append(errorBox(error.message));
     return;
   }
+  // `draft` is the editable shape; `axes` also carries the read-only DB counts.
+  data.draft = Object.fromEntries(
+    data.axes.map((entry) => [
+      entry.axis,
+      entry.editable.map((tag) => ({
+        tag: tag.tag, weight: tag.weight, terms: [...tag.terms],
+      })),
+    ])
+  );
+  data.papersByTag = Object.fromEntries(
+    data.axes.flatMap((entry) => entry.editable.map((tag) => [tag.tag, tag.papers]))
+  );
+  tagsState.data = data;
+  tagsState.token = data.token;
+  tagsState.draft = structuredClone(data.draft);
+  paintScoringRules(data);
+  paintTagEditor();
+}
+
+function paintScoringRules(data) {
   const labels = {
     minimum_relevant: "선별 최소 점수", title_multiplier: "제목 매칭 배수",
     cross_axis_bonus: "축 교차 보너스", code_bonus: "코드 공개 보너스",
@@ -1061,105 +989,165 @@ async function renderScoring() {
       el("span", { text: labels[key] || key }),
     ]))
   );
-
-  const axisLabels = { methods: "방법론 (methods)", domains: "도메인 (domains)", tasks: "과업 (tasks)" };
-  const container = clear(document.getElementById("scoring-axes"));
-  for (const axis of data.axes) {
-    const chart = el("div", { class: "chart" });
-    const card = el("section", { class: "card axis-card" }, [
-      el("header", { class: "card-head" }, [
-        el("h2", { text: axisLabels[axis.axis] || axis.axis }),
-        el("p", { class: "card-sub", text: `태그 ${axis.tags.length}개 · 막대는 가중치` }),
-      ]),
-      chart,
-      el("div", { class: "table-wrap" }, [
-        el("table", { class: "data" }, [
-          el("thead", {}, [el("tr", {}, [
-            el("th", { text: "태그" }), el("th", { text: "가중치" }),
-            el("th", { text: "DB 논문" }), el("th", { text: "평균 점수" }), el("th", { text: "용어" }),
-          ])]),
-          el("tbody", {}, axis.tags.map((tag) => el("tr", {}, [
-            el("td", { text: tag.tag }),
-            el("td", { class: "num", text: tag.weight }),
-            el("td", { class: "num", text: tag.papers }),
-            el("td", { class: "num", text: tag.mean_score || "—" }),
-            el("td", { class: "terms-cell" }, tag.terms.map((term) => el("span", { class: "term", text: term }))),
-          ]))),
-        ]),
-      ]),
-    ]);
-    container.append(card);
-    barChart(chart, axis.tags.map((tag) => ({
-      label: tag.tag,
-      value: tag.weight,
-      note: `DB 논문 ${tag.papers}편 · 용어 ${tag.terms.length}개`,
-    })), { unit: "점" });
-  }
-
-  if (!scoringLoaded) {
-    scoringLoaded = true;
-    const run = debounce(runSimulator, 300);
-    document.getElementById("sim-title").addEventListener("input", run);
-    document.getElementById("sim-abstract").addEventListener("input", run);
-    document.getElementById("sim-code").addEventListener("change", runSimulator);
-  }
-  await runSimulator();
 }
 
-async function runSimulator() {
-  const title = document.getElementById("sim-title").value;
-  const abstract = document.getElementById("sim-abstract").value;
-  const target = document.getElementById("sim-result");
-  if (!title.trim() && !abstract.trim()) {
-    clear(target).append(el("p", { class: "note", text: "제목이나 초록을 입력하면 결과가 표시됩니다." }));
-    return;
-  }
-  let data;
-  try {
-    data = await api("/api/simulate", { title, abstract, code: document.getElementById("sim-code").checked ? "1" : "" });
-  } catch (error) {
-    clear(target).append(errorBox(error.message));
-    return;
-  }
-  const rows = data.matches.map((match) => el("tr", {}, [
-    el("td", {}, [
-      el("div", {}, [tagPill(match.tag, match.axis)]),
-      el("div", { class: "terms-cell" }, match.terms.map((term) =>
-        el("span", { class: "term" + (match.title_terms.includes(term) ? " in-title" : ""), text: term }))),
-    ]),
-    el("td", { class: "num", text: match.weight.toFixed(1) }),
-    el("td", { class: "num", text: "×" + match.multiplier.toFixed(2) }),
-    el("td", { class: "num", text: "+" + match.contribution.toFixed(1) }),
-  ]));
-  for (const bonus of data.bonuses) {
-    rows.push(el("tr", { class: "bonus" }, [
-      el("td", { text: bonus.name }), el("td", { class: "num", text: "—" }),
-      el("td", { class: "num", text: "—" }), el("td", { class: "num", text: "+" + bonus.amount.toFixed(1) }),
+function tagsAreDirty() {
+  return JSON.stringify(tagsState.draft) !== JSON.stringify(tagsState.data.draft);
+}
+
+function paintTagEditor() {
+  const container = clear(document.getElementById("tag-editor"));
+  for (const { axis, label, glyph } of AXES) {
+    const tags = tagsState.draft[axis] || [];
+    const list = el("div", {});
+    tags.forEach((tag, index) => {
+      list.append(tagRow(axis, tag, index));
+    });
+    if (!tags.length) {
+      list.append(el("p", { class: "note", text: "이 축에는 태그가 없습니다." }));
+    }
+    container.append(el("div", { class: "tag-axis" }, [
+      el("h3", {}, [`${glyph} ${label}`, el("span", { class: "axis-count", text: ` ${tags.length}개` })]),
+      list,
+      el("button", {
+        class: "ghost query-add", type: "button",
+        onclick: () => {
+          tagsState.draft[axis].push({ tag: "", weight: 10, terms: [] });
+          paintTagEditor();
+          const inputs = container.querySelectorAll(`[data-axis="${axis}"] .tag-name`);
+          if (inputs.length) inputs[inputs.length - 1].focus();
+        },
+      }, ["+ 태그 추가"]),
     ]));
   }
-  rows.push(el("tr", { class: "total" }, [
-    el("td", { text: data.capped ? `합계 (${data.raw_score.toFixed(1)} → 상한 ${data.max_score})` : "합계" }),
-    el("td", {}), el("td", {}),
-    el("td", { class: "num", text: data.score.toFixed(1) }),
-  ]));
+  updateTagEditorState();
+}
 
-  clear(target).append(
-    el("div", { class: "kpi-row" }, [
-      tile("점수", data.score, `상한 ${data.max_score}`),
-      tile("선별 여부", data.relevant ? "통과" : "탈락", `기준 ${data.minimum_relevant}점`),
-      tile("매칭 태그", data.matches.length, Object.entries(data.tags)
-        .filter(([, list]) => list.length).map(([axis]) => axis).join(", ") || "없음"),
+function tagRow(axis, tag, index) {
+  const papers = tagsState.data.papersByTag[tag.tag];
+  const terms = el("div", { class: "term-chips" });
+  tag.terms.forEach((term, termIndex) => {
+    terms.append(el("span", { class: "term-chip" }, [
+      el("span", { text: term }),
+      el("button", {
+        class: "chip-remove", type: "button", title: `${term} 삭제`,
+        onclick: () => {
+          tagsState.draft[axis][index].terms.splice(termIndex, 1);
+          paintTagEditor();
+        },
+      }, ["×"]),
+    ]));
+  });
+
+  const addTerm = (event) => {
+    const input = event.target;
+    const value = input.value.trim();
+    if (!value) return;
+    const existing = tagsState.draft[axis][index].terms;
+    if (existing.some((term) => term.toLowerCase() === value.toLowerCase())) {
+      input.value = "";
+      return;
+    }
+    existing.push(value);
+    input.value = "";
+    paintTagEditor();
+    const focus = document.querySelector(
+      `[data-axis="${axis}"][data-index="${index}"] .term-input`);
+    if (focus) focus.focus();
+  };
+  terms.append(el("input", {
+    class: "term-input", type: "text", placeholder: "+ 용어 추가", spellcheck: "false",
+    "aria-label": `${tag.tag || "새 태그"} 용어 추가`,
+    onkeydown: (event) => {
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      addTerm(event);
+    },
+    onblur: addTerm,
+  }));
+
+  return el("div", { class: "tag-row", dataset: { axis, index: String(index) } }, [
+    el("div", { class: "tag-row-head" }, [
+      el("input", {
+        class: "tag-name", type: "text", value: tag.tag, placeholder: "tag_name",
+        spellcheck: "false", "aria-label": "태그 이름",
+        oninput: (event) => {
+          tagsState.draft[axis][index].tag = event.target.value;
+          updateTagEditorState();
+        },
+      }),
+      el("label", { class: "weight-field" }, [
+        el("span", { text: "가중치" }),
+        el("input", {
+          type: "number", value: tag.weight, min: "0", max: "100", step: "1",
+          "aria-label": "가중치",
+          oninput: (event) => {
+            tagsState.draft[axis][index].weight = Number(event.target.value);
+            updateTagEditorState();
+          },
+        }),
+      ]),
+      papers ? el("span", { class: "pill", text: `논문 ${papers}편` }) : null,
+      el("button", {
+        class: "icon-button", type: "button", title: "이 태그 삭제",
+        onclick: () => {
+          tagsState.draft[axis].splice(index, 1);
+          paintTagEditor();
+        },
+      }, ["✕"]),
     ]),
-    rows.length > 1
-      ? el("table", { class: "ledger", style: { marginTop: "14px" } }, [
-          el("thead", {}, [el("tr", {}, [
-            el("th", { text: "매칭된 태그 · 용어" }), el("th", { text: "가중치" }),
-            el("th", { text: "제목 배수" }), el("th", { text: "기여" }),
-          ])]),
-          el("tbody", {}, rows),
-        ])
-      : el("p", { class: "note", text: "매칭된 키워드가 없습니다." })
-  );
+    terms,
+  ]);
+}
+
+function updateTagEditorState() {
+  const dirty = tagsAreDirty();
+  document.getElementById("t-save").disabled = !dirty;
+  document.getElementById("t-revert").disabled = !dirty;
+  const note = document.getElementById("tag-editor-note");
+  note.classList.remove("error");
+  note.textContent = dirty
+    ? "저장하지 않은 변경이 있습니다. 저장하면 keywords.yml의 methods·domains·tasks 중 바뀐 블록만 다시 씁니다."
+    : "keywords.yml과 동일합니다.";
+  const total = AXES.reduce((sum, { axis }) => sum + (tagsState.draft[axis] || []).length, 0);
+  document.getElementById("tag-editor-sub").textContent =
+    `${tagsState.data.config_path} · 태그 ${total}개`;
+}
+
+async function saveTags() {
+  const note = document.getElementById("tag-editor-note");
+  const buttons = [document.getElementById("t-save"), document.getElementById("t-revert")];
+  for (const button of buttons) button.disabled = true;
+  note.classList.remove("error");
+  note.textContent = "저장 중…";
+  try {
+    const result = await apiPost("/api/tags", {
+      token: tagsState.token,
+      axes: tagsState.draft,
+    });
+    result.draft = Object.fromEntries(
+      result.axes.map((entry) => [
+        entry.axis,
+        entry.editable.map((tag) => ({
+          tag: tag.tag, weight: tag.weight, terms: [...tag.terms],
+        })),
+      ])
+    );
+    result.papersByTag = Object.fromEntries(
+      result.axes.flatMap((entry) => entry.editable.map((tag) => [tag.tag, tag.papers]))
+    );
+    tagsState.data = result;
+    tagsState.token = result.token;
+    tagsState.draft = structuredClone(result.draft);
+    paintScoringRules(result);
+    paintTagEditor();
+    note.textContent =
+      "keywords.yml에 저장했습니다. 이미 저장된 논문의 점수는 다음 수집 때 다시 계산됩니다.";
+  } catch (error) {
+    note.classList.add("error");
+    note.textContent = "저장하지 못했습니다: " + error.message;
+    for (const button of buttons) button.disabled = false;
+  }
 }
 
 // ------------------------------------------------------------------ 트렌드 뷰
@@ -1334,7 +1322,7 @@ const VIEWS = {
   overview: renderOverview,
   papers: renderPapers,
   queries: renderQueries,
-  scoring: renderScoring,
+  tags: renderTags,
   trends: renderTrends,
   reports: renderReports,
 };
@@ -1344,7 +1332,8 @@ let currentView = "overview";
 /* Hash routes are `#view` or `#papers/<id>` so a paper stays bookmarkable. */
 function parseHash() {
   const [name, arg] = window.location.hash.slice(1).split("/");
-  return { name: name || "overview", arg };
+  // The scoring tab became 태그; keep old links working.
+  return { name: name === "scoring" ? "tags" : name || "overview", arg };
 }
 
 function showView(name, arg) {

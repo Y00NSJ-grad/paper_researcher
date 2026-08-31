@@ -28,7 +28,7 @@
     <button role="tab" class="tab" data-view="overview" aria-selected="true">개요</button>
     <button role="tab" class="tab" data-view="papers" aria-selected="false">논문</button>
     <button role="tab" class="tab" data-view="queries" aria-selected="false">쿼리</button>
-    <button role="tab" class="tab" data-view="scoring" aria-selected="false">스코어링</button>
+    <button role="tab" class="tab" data-view="tags" aria-selected="false">태그</button>
     <button role="tab" class="tab" data-view="trends" aria-selected="false">트렌드 맵</button>
     <button role="tab" class="tab" data-view="reports" aria-selected="false">리포트</button>
   </nav>
@@ -168,40 +168,16 @@
       </section>
 
       <section class="card">
-        <header class="card-head card-head-row">
-          <div class="card-head-text">
-            <h2>소스별 실제 요청</h2>
-            <p class="card-sub" id="plan-sub"></p>
-          </div>
-          <label class="field inline">
-            <span>그룹</span>
-            <select id="plan-group">
-              <option value="daily">daily</option>
-              <option value="weekly">weekly</option>
-            </select>
-          </label>
-        </header>
-        <div id="query-plan"></div>
-      </section>
-
-      <section class="card">
         <header class="card-head">
           <h2>쿼리별 수확량</h2>
           <p class="card-sub" id="queries-sub"></p>
         </header>
         <div class="chart" id="chart-queries"></div>
       </section>
-      <section class="card">
-        <header class="card-head">
-          <h2>쿼리 목록</h2>
-          <p class="card-sub"><code>config/keywords.yml</code>의 쿼리와 DB에 기록된 실적</p>
-        </header>
-        <div class="table-wrap" id="table-queries"></div>
-      </section>
     </section>
 
-    <!-- 스코어링 -->
-    <section class="view" id="view-scoring" role="tabpanel" hidden>
+    <!-- 태그 -->
+    <section class="view" id="view-tags" role="tabpanel" hidden>
       <section class="card">
         <header class="card-head">
           <h2>점수 계산 규칙</h2>
@@ -210,27 +186,19 @@
         <div id="scoring-formula" class="formula"></div>
       </section>
       <section class="card">
-        <header class="card-head">
-          <h2>점수 시뮬레이터</h2>
-          <p class="card-sub">제목·초록을 붙여 넣으면 파이프라인과 같은 함수로 점수를 계산합니다.</p>
+        <header class="card-head card-head-row">
+          <div class="card-head-text">
+            <h2>태그 편집</h2>
+            <p class="card-sub" id="tag-editor-sub"></p>
+          </div>
+          <div class="editor-actions">
+            <button type="button" class="ghost" id="t-revert">되돌리기</button>
+            <button type="button" class="ghost primary" id="t-save">저장</button>
+          </div>
         </header>
-        <div class="sim">
-          <label class="field grow">
-            <span>제목</span>
-            <input type="text" id="sim-title" placeholder="MARL-based Routing for LEO Satellite Networks">
-          </label>
-          <label class="field checkbox">
-            <input type="checkbox" id="sim-code">
-            <span>코드 공개</span>
-          </label>
-          <label class="field grow full">
-            <span>초록</span>
-            <textarea id="sim-abstract" rows="4" placeholder="Abstract…"></textarea>
-          </label>
-        </div>
-        <div id="sim-result"></div>
+        <div id="tag-editor"></div>
+        <p class="verdict-note" id="tag-editor-note"></p>
       </section>
-      <div id="scoring-axes"></div>
     </section>
 
     <!-- 트렌드 -->

@@ -463,35 +463,54 @@ button.ghost:disabled { opacity: 0.5; cursor: default; }
 .icon-button:hover { color: var(--critical); border-color: var(--critical); }
 .query-add { margin-top: 4px; }
 
-/* -------------------------------------------------------------- query plan */
+/* ------------------------------------------------------------- tag editor */
 
-.plan-source {
-  border: 1px solid var(--border); border-radius: var(--radius);
-  padding: 12px 14px; margin-bottom: 12px; background: var(--surface-1);
+.tag-axis { margin-bottom: 20px; }
+.tag-axis > h3 {
+  font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--text-muted); margin-bottom: 10px;
 }
-.plan-head { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; }
-.plan-head h3 { font-size: 13px; font-family: var(--mono); }
-.plan-note { font-size: 12px; color: var(--text-secondary); margin: 8px 0 0; }
-.plan-endpoint { font-size: 11px; color: var(--text-muted); font-family: var(--mono); }
-.pill.mode-net { background: var(--attr-survey-bg); border-color: var(--attr-survey); color: var(--attr-survey-ink); font-weight: 600; }
-.pill.mode-per_query { background: var(--attr-code-bg); border-color: var(--attr-code); color: var(--attr-code-ink); font-weight: 600; }
-.pill.disabled { opacity: 0.7; }
-pre.expression {
-  margin: 10px 0 0; padding: 10px 12px; border-radius: 8px;
-  background: var(--surface-2); font-family: var(--mono); font-size: 11.5px;
-  line-height: 1.6; white-space: pre-wrap; word-break: break-word;
-  max-height: 190px; overflow-y: auto; color: var(--text-secondary);
+.tag-axis .axis-count { text-transform: none; letter-spacing: 0; }
+.tag-row {
+  border: 1px solid var(--border); border-radius: 8px;
+  padding: 10px 12px; margin-bottom: 8px; background: var(--surface-1);
 }
-.plan-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 10px; }
-.plan-table th {
-  text-align: left; font-weight: 500; font-size: 11px; color: var(--text-muted);
-  padding: 5px 8px; border-bottom: 1px solid var(--grid);
+.tag-row-head { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.tag-name {
+  font: inherit; font-size: 13px; font-family: var(--mono); font-weight: 600;
+  color: var(--text-primary); background: var(--surface-1);
+  border: 1px solid var(--border); border-radius: 8px; padding: 6px 9px;
+  /* Tag names are short; let the weight and count sit at the right edge. */
+  flex: 0 1 320px; min-width: 0; margin-right: auto;
 }
-.plan-table td { padding: 6px 8px; border-bottom: 1px solid var(--grid); vertical-align: top; }
-.plan-table tr:last-child td { border-bottom: none; }
-.plan-table code { font-size: 11.5px; word-break: break-word; }
-.plan-changed { color: var(--attr-survey-ink); font-weight: 600; }
-.net-terms { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 10px; }
+.tag-name:focus, .weight-field input:focus, .term-input:focus {
+  outline: 2px solid var(--series-1); outline-offset: -1px;
+}
+.weight-field { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-secondary); flex: none; }
+.weight-field input {
+  font: inherit; font-size: 13px; width: 68px; text-align: right;
+  font-variant-numeric: tabular-nums; color: var(--text-primary);
+  background: var(--surface-1); border: 1px solid var(--border);
+  border-radius: 8px; padding: 6px 8px;
+}
+.term-chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 9px; }
+.term-chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-family: var(--mono); font-size: 11.5px;
+  background: var(--surface-2); color: var(--text-secondary);
+  border-radius: 6px; padding: 3px 4px 3px 8px;
+}
+.chip-remove {
+  font: inherit; font-size: 12px; line-height: 1; cursor: pointer;
+  background: none; border: none; color: var(--text-muted); padding: 0 3px;
+}
+.chip-remove:hover { color: var(--critical); }
+.term-input {
+  font: inherit; font-size: 11.5px; font-family: var(--mono);
+  color: var(--text-primary); background: none;
+  border: 1px dashed var(--axis); border-radius: 6px;
+  padding: 3px 8px; width: 130px; min-width: 0;
+}
 
 /* ---------------------------------------------------------------- markdown */
 

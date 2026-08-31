@@ -2,8 +2,8 @@
 
 Stdlib only and bound to 127.0.0.1 by default: the dashboard adds no runtime
 dependency to a pipeline that otherwise runs headless under systemd. Reads are
-plain GETs; the single write route (feedback verdicts) is a POST guarded by the
-checks in `_csrf_reason`.
+plain GETs; the write routes (feedback verdicts, query and tag edits) are POSTs
+guarded by the checks in `_csrf_reason`.
 """
 
 from __future__ import annotations
@@ -33,7 +33,9 @@ PAPER_PATH = re.compile(r"^/api/papers/(\d+)$")
 FEEDBACK_PATH = re.compile(r"^/api/papers/(\d+)/feedback$")
 REPORT_PATH = re.compile(r"^/api/reports/([^/]+)/([^/]+)$")
 LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1", "[::1]"}
-MAX_BODY = 4096
+# Large enough for a whole keywords.yml worth of tags and terms, small enough
+# that a runaway request is still refused.
+MAX_BODY = 64 * 1024
 
 
 def _first(values: dict[str, list[str]], key: str, default: str = "") -> str:
@@ -153,7 +155,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         route = urlparse(self.path).path
         feedback_match = FEEDBACK_PATH.match(route)
-        if not feedback_match and route != "/api/queries":
+        if not feedback_match and route not in ("/api/queries", "/api/tags"):
             self.close_connection = True
             self._error(HTTPStatus.NOT_FOUND, "Not found")
             return
@@ -166,10 +168,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     self._json(self.data.clear_feedback(paper_id))
                 else:
                     self._json(self.data.record_feedback(paper_id, value))
-            else:
+            elif route == "/api/queries":
                 self._json(
                     self.data.save_queries(
                         payload.get("queries") or {}, str(payload.get("token") or "")
+                    )
+                )
+            else:
+                self._json(
+                    self.data.save_axes(
+                        payload.get("axes") or {}, str(payload.get("token") or "")
                     )
                 )
         except ConfigChanged as exc:
@@ -225,25 +233,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if route == "/api/queries":
             self._json(data.queries())
             return
-        if route == "/api/query-plan":
-            self._json(
-                data.plan(
-                    since_hours=max(1, min(_int(params, "since_hours", 48), 24 * 365)),
-                    limit_per_query=max(1, min(_int(params, "limit", 25), 200)),
-                )
-            )
-            return
         if route == "/api/scoring":
             self._json(data.scoring())
-            return
-        if route == "/api/simulate":
-            self._json(
-                data.simulate(
-                    title=_first(params, "title"),
-                    abstract=_first(params, "abstract"),
-                    has_code=_first(params, "code") in {"1", "true", "on"},
-                )
-            )
             return
         if route == "/api/trends":
             self._json(data.trends(days=max(1, min(_int(params, "days", 30), 365))))

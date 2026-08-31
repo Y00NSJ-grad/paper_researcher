@@ -13,9 +13,17 @@ from collections import Counter, defaultdict
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from radar.collectors.common import anchors_from_config
-from radar.collectors.plan import query_plan
-from radar.config import QUERY_GROUPS, Settings, config_token, load_config, write_queries
+from radar.config import (
+    AXES as CONFIG_AXES,
+)
+from radar.config import (
+    QUERY_GROUPS,
+    Settings,
+    config_token,
+    load_config,
+    write_axes,
+    write_queries,
+)
 from radar.reports import KST, trend_counts
 from radar.scoring import explain_score, is_survey
 from radar.storage import FEEDBACK_VALUES, PaperStore
@@ -545,36 +553,6 @@ class DashboardData:
         write_queries(self.settings.config_path, groups)
         return self.queries()
 
-    def plan(self, since_hours: int = 48, limit_per_query: int = 25) -> dict[str, Any]:
-        """What each source would be asked, for the queries a daily run uses."""
-        configured = self.config.get("queries", {}) or {}
-        since = datetime.now(UTC) - timedelta(hours=since_hours)
-        groups = {
-            group: list(configured.get(group) or [])
-            for group in QUERY_GROUPS
-        }
-        plans = {
-            group: query_plan(
-                self.config,
-                queries,
-                since,
-                limit_per_query=limit_per_query,
-                ieee_enabled=bool(
-                    self.settings.ieee_xplore_enabled and self.settings.ieee_xplore_api_key
-                ),
-            )
-            for group, queries in groups.items()
-        }
-        return {
-            "since": since.isoformat(),
-            "since_hours": since_hours,
-            "limit_per_query": limit_per_query,
-            "groups": groups,
-            "plans": plans,
-            "anchors": anchors_from_config(self.config),
-            "config_path": str(self.settings.config_path),
-        }
-
     # ------------------------------------------------------------------- scoring
 
     def scoring(self) -> dict[str, Any]:
@@ -602,8 +580,22 @@ class DashboardData:
                         "mean_score": round(sum(scores) / len(scores), 1) if scores else 0,
                     }
                 )
-            entries.sort(key=lambda item: (-item["weight"], item["tag"]))
-            axes.append({"axis": axis, "tags": entries})
+            # The editor keeps the file's order; the read-only view sorts by weight.
+            axes.append(
+                {
+                    "axis": axis,
+                    "tags": sorted(entries, key=lambda item: (-item["weight"], item["tag"])),
+                    "editable": [
+                        {
+                            "tag": entry["tag"],
+                            "weight": entry["weight"],
+                            "terms": entry["terms"],
+                            "papers": entry["papers"],
+                        }
+                        for entry in entries
+                    ],
+                }
+            )
 
         unused = sorted(
             tag for tag in tag_papers if not any(tag in (self.config.get(a, {}) or {}) for a in AXES)
@@ -612,33 +604,22 @@ class DashboardData:
             "axes": axes,
             "params": self.config.get("scoring", {}) or {},
             "orphan_tags": unused,
+            "token": config_token(self.settings.config_path),
             "config_path": str(self.settings.config_path),
         }
 
-    def simulate(self, title: str, abstract: str, has_code: bool = False) -> dict[str, Any]:
-        breakdown = explain_score(title, abstract, self.config, has_code=has_code)
-        return {
-            "score": breakdown.score,
-            "raw_score": breakdown.raw_score,
-            "capped": breakdown.capped,
-            "relevant": breakdown.relevant,
-            "minimum_relevant": breakdown.minimum_relevant,
-            "max_score": breakdown.max_score,
-            "tags": breakdown.tags,
-            "matches": [
-                {
-                    "axis": match.axis,
-                    "tag": match.tag,
-                    "weight": match.weight,
-                    "terms": match.terms,
-                    "title_terms": match.title_terms,
-                    "multiplier": match.multiplier,
-                    "contribution": round(match.contribution, 2),
-                }
-                for match in breakdown.matches
-            ],
-            "bonuses": [{"name": b.name, "amount": b.amount} for b in breakdown.bonuses],
-        }
+    def save_axes(self, axes: dict[str, list[dict[str, Any]]], token: str) -> dict[str, Any]:
+        """Persist tag edits to keywords.yml, refusing to overwrite a newer file."""
+        if token != config_token(self.settings.config_path):
+            raise ConfigChanged(
+                "keywords.yml이 대시보드 밖에서 수정되었습니다. "
+                "새로고침한 뒤 다시 저장하세요."
+            )
+        missing = [axis for axis in CONFIG_AXES if axis not in axes]
+        if missing:
+            raise ValueError(f"Missing tag axes: {', '.join(missing)}")
+        write_axes(self.settings.config_path, axes)
+        return self.scoring()
 
     # -------------------------------------------------------------------- trends
 

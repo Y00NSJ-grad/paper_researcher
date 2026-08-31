@@ -123,19 +123,18 @@ def _render_queries_block(queries: dict[str, list[str]]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def replace_queries_block(text: str, queries: dict[str, list[str]]) -> str:
-    """Rewrite only the `queries:` mapping, leaving every other byte untouched."""
-    lines = text.splitlines(keepends=True)
+def _block_span(lines: list[str], key: str) -> tuple[int, int] | None:
+    """Line range of one top-level mapping, excluding the blank lines after it."""
     start = next(
-        (index for index, line in enumerate(lines) if _TOP_LEVEL_KEY.match(line)
-         and line.startswith("queries:")),
+        (
+            index
+            for index, line in enumerate(lines)
+            if _TOP_LEVEL_KEY.match(line) and line.startswith(f"{key}:")
+        ),
         None,
     )
-    block = _render_queries_block(queries)
     if start is None:
-        separator = "" if not text or text.endswith("\n\n") else "\n"
-        return f"{text}{separator}{block}"
-
+        return None
     # The block runs until the next line with content in column 0 — the next
     # top-level key, or a comment introducing it, which must survive intact.
     end = len(lines)
@@ -148,24 +147,189 @@ def replace_queries_block(text: str, queries: dict[str, list[str]]) -> str:
     # by the tail rather than replaced along with the block.
     while end > start + 1 and not lines[end - 1].strip():
         end -= 1
+    return start, end
+
+
+def replace_block(text: str, key: str, block: str) -> str:
+    """Swap one top-level mapping for `block`, leaving every other byte untouched."""
+    lines = text.splitlines(keepends=True)
+    span = _block_span(lines, key)
+    if span is None:
+        separator = "" if not text or text.endswith("\n\n") else "\n"
+        return f"{text}{separator}{block}"
+    start, end = span
     return "".join(lines[:start]) + block + "".join(lines[end:])
+
+
+def replace_queries_block(text: str, queries: dict[str, list[str]]) -> str:
+    return replace_block(text, "queries", _render_queries_block(queries))
+
+
+def _write_verified(path: Path, updated_text: str, changed: dict[str, Any]) -> None:
+    """Re-parse before replacing the file, so a rendering bug cannot corrupt it."""
+    original = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    updated = yaml.safe_load(updated_text)
+    if not isinstance(updated, dict) or any(
+        updated.get(key) != value for key, value in changed.items()
+    ):
+        raise ValueError("The rewritten config did not round-trip; nothing was written")
+    untouched = {key: value for key, value in updated.items() if key not in changed}
+    if untouched != {key: value for key, value in original.items() if key not in changed}:
+        raise ValueError("Rewriting the config changed unrelated settings; nothing was written")
+
+    temporary = path.with_name(f"{path.name}.tmp")
+    temporary.write_text(updated_text, encoding="utf-8")
+    temporary.replace(path)
 
 
 def write_queries(path: Path, queries: dict[str, list[str]]) -> dict[str, list[str]]:
     """Persist query edits, verifying the result before it replaces the file."""
     cleaned = validate_queries(queries)
-    original_text = path.read_text(encoding="utf-8")
-    original = yaml.safe_load(original_text) or {}
-    updated_text = replace_queries_block(original_text, cleaned)
+    text = replace_queries_block(path.read_text(encoding="utf-8"), cleaned)
+    _write_verified(path, text, {"queries": cleaned})
+    return cleaned
 
-    updated = yaml.safe_load(updated_text)
-    if not isinstance(updated, dict) or updated.get("queries") != cleaned:
-        raise ValueError("Rewriting the queries block did not round-trip; nothing was written")
-    untouched = {key: value for key, value in updated.items() if key != "queries"}
-    if untouched != {key: value for key, value in original.items() if key != "queries"}:
-        raise ValueError("Rewriting the queries block changed unrelated settings")
 
-    temporary = path.with_name(f"{path.name}.tmp")
-    temporary.write_text(updated_text, encoding="utf-8")
-    temporary.replace(path)
+# ------------------------------------------------------------------ tag axes
+
+AXES = ("methods", "domains", "tasks")
+MAX_TERM_LENGTH = 120
+_TAG_NAME = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_-]*$")
+_YAML_INDICATORS = set("-?:,[]{}#&*!|>'\"%@`")
+_TAG_LINE = re.compile(r"^  ([A-Za-z0-9_][A-Za-z0-9_-]*):\s*$")
+_FLOW_TERMS_LINE = re.compile(r"^    terms:\s*\[")
+
+
+def validate_axes(axes: dict[str, list[dict[str, Any]]]) -> dict[str, list[dict[str, Any]]]:
+    """Reject anything the scorer could not use, before it reaches the file."""
+    cleaned: dict[str, list[dict[str, Any]]] = {}
+    for axis, entries in axes.items():
+        if axis not in AXES:
+            raise ValueError(f"Unknown tag axis: {axis!r}")
+        if not isinstance(entries, list):
+            raise TypeError(f"{axis} must be a list of tags")
+        seen_tags: set[str] = set()
+        axis_tags: list[dict[str, Any]] = []
+        for entry in entries:
+            if not isinstance(entry, dict):
+                raise TypeError(f"Each {axis} tag must be an object")
+            name = str(entry.get("tag", "")).strip()
+            if not _TAG_NAME.match(name):
+                raise ValueError(
+                    f"Tag names use letters, digits, `_` and `-` only: {name or '(empty)'}"
+                )
+            if name in seen_tags:
+                raise ValueError(f"Duplicate tag in {axis}: {name}")
+            seen_tags.add(name)
+
+            try:
+                weight = float(entry.get("weight", 0))
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"{name}: weight must be a number") from exc
+            if not 0 <= weight <= 100:
+                raise ValueError(f"{name}: weight must be between 0 and 100")
+
+            raw_terms = entry.get("terms")
+            if not isinstance(raw_terms, list):
+                raise TypeError(f"{name}: terms must be a list")
+            seen_terms: set[str] = set()
+            terms: list[str] = []
+            for term in raw_terms:
+                if not isinstance(term, str):
+                    raise TypeError(f"{name}: terms must be strings")
+                text = " ".join(term.split())
+                if not text:
+                    raise ValueError(f"{name}: a term cannot be empty")
+                if len(text) > MAX_TERM_LENGTH:
+                    raise ValueError(f"{name}: a term cannot exceed {MAX_TERM_LENGTH} characters")
+                if text.lower() in seen_terms:
+                    raise ValueError(f"{name}: duplicate term {text}")
+                seen_terms.add(text.lower())
+                terms.append(text)
+            if not terms:
+                raise ValueError(f"{name}: a tag needs at least one term or it can never match")
+
+            # Integral weights render as `14` rather than `14.0`, matching the file.
+            axis_tags.append(
+                {"tag": name, "weight": int(weight) if weight.is_integer() else weight,
+                 "terms": terms}
+            )
+        cleaned[axis] = axis_tags
+    return cleaned
+
+
+def _plain_ok(value: str, flow: bool) -> bool:
+    """Whether a YAML plain (unquoted) scalar would read back as this string."""
+    if not value or value != value.strip():
+        return False
+    if value[0] in _YAML_INDICATORS:
+        return False
+    if ": " in value or " #" in value or value.endswith(":"):
+        return False
+    if flow and any(character in value for character in ",[]{}"):
+        return False
+    try:
+        return yaml.safe_load(value) == value
+    except yaml.YAMLError:
+        return False
+
+
+def _scalar(value: str, flow: bool = False) -> str:
+    return value if _plain_ok(value, flow) else _quote(value)
+
+
+def flow_style_tags(text: str, axis: str) -> set[str]:
+    """Tags whose `terms` are written inline, so a rewrite can keep that style."""
+    lines = text.splitlines(keepends=True)
+    span = _block_span(lines, axis)
+    if span is None:
+        return set()
+    start, end = span
+    flow: set[str] = set()
+    current: str | None = None
+    for line in lines[start + 1 : end]:
+        match = _TAG_LINE.match(line.rstrip("\n"))
+        if match:
+            current = match.group(1)
+        elif current and _FLOW_TERMS_LINE.match(line):
+            flow.add(current)
+    return flow
+
+
+def render_axis_block(axis: str, tags: list[dict[str, Any]], flow: set[str] | None = None) -> str:
+    """Render one axis, keeping inline `terms: [...]` for tags that used it."""
+    inline = flow or set()
+    if not tags:
+        return f"{axis}: {{}}\n"
+    lines = [f"{axis}:"]
+    for entry in tags:
+        terms = entry["terms"]
+        lines.append(f"  {entry['tag']}:")
+        lines.append(f"    weight: {entry['weight']}")
+        if entry["tag"] in inline and all(_plain_ok(term, flow=True) for term in terms):
+            lines.append("    terms: [" + ", ".join(terms) + "]")
+        else:
+            lines.append("    terms:")
+            lines.extend(f"      - {_scalar(term)}" for term in terms)
+    return "\n".join(lines) + "\n"
+
+
+def write_axes(path: Path, axes: dict[str, list[dict[str, Any]]]) -> dict[str, list[dict[str, Any]]]:
+    """Persist tag edits, rewriting only the axes whose contents actually changed."""
+    cleaned = validate_axes(axes)
+    text = path.read_text(encoding="utf-8")
+    current = yaml.safe_load(text) or {}
+
+    changed: dict[str, Any] = {}
+    for axis, tags in cleaned.items():
+        mapping = {
+            entry["tag"]: {"weight": entry["weight"], "terms": entry["terms"]} for entry in tags
+        }
+        if mapping == (current.get(axis) or {}) and axis in current:
+            continue
+        text = replace_block(text, axis, render_axis_block(axis, tags, flow_style_tags(text, axis)))
+        changed[axis] = mapping
+    if not changed:
+        return cleaned
+    _write_verified(path, text, changed)
     return cleaned

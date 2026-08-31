@@ -10,7 +10,6 @@ from pathlib import Path
 
 import yaml
 
-from radar.collectors import arxiv as arxiv_module
 from radar.config import Settings
 from radar.dashboard.data import (
     ConfigChanged,
@@ -414,76 +413,6 @@ class FeedbackTest(unittest.TestCase):
         self.assertEqual(self.data.store.feedback_history(self.paper_id), [])
 
 
-class QueryPlanTest(unittest.TestCase):
-    def setUp(self):
-        self._directory = tempfile.TemporaryDirectory()
-        self.addCleanup(self._directory.cleanup)
-        self.settings = make_settings(Path(self._directory.name))
-        self.data = DashboardData(self.settings)
-
-    def by_source(self, group: str = "daily") -> dict:
-        return {entry["source"]: entry for entry in self.data.plan()["plans"][group]}
-
-    def test_every_collector_is_described(self):
-        sources = self.by_source()
-        self.assertEqual(
-            set(sources),
-            {"openalex", "semantic_scholar", "openreview", "arxiv", "huggingface", "ieee_xplore"},
-        )
-
-    def test_per_query_sources_report_what_they_send(self):
-        openalex = self.by_source()["openalex"]
-        self.assertEqual(openalex["mode"], "per_query")
-        self.assertEqual(openalex["request_count"], 2)
-        self.assertEqual(openalex["requests"][0]["query"], "LEO satellite routing")
-        self.assertEqual(openalex["requests"][0]["sent"], "LEO satellite routing")
-        self.assertEqual(openalex["requests"][0]["params"]["search"], "LEO satellite routing")
-
-    def test_semantic_scholar_shows_its_hyphen_rewrite(self):
-        settings = self.settings
-        settings.config_path.write_text(
-            CONFIG.replace("    - 'LEO satellite routing'", "    - 'non-terrestrial routing'"),
-            encoding="utf-8",
-        )
-        entry = self.by_source()["semantic_scholar"]
-        request = next(r for r in entry["requests"] if r["query"] == "non-terrestrial routing")
-
-        self.assertEqual(request["sent"], "non terrestrial routing")
-        self.assertNotEqual(request["sent"], request["query"])
-
-    def test_arxiv_sends_one_net_rather_than_the_queries(self):
-        arxiv = self.by_source()["arxiv"]
-
-        self.assertEqual(arxiv["mode"], "net")
-        self.assertEqual(arxiv["request_count"], 1)
-        self.assertIn("LEO satellite", arxiv["net_terms"])
-        self.assertIn('all:"LEO satellite"', arxiv["expression"])
-        self.assertIn("submittedDate:[", arxiv["expression"])
-        # The query text itself is never handed to arXiv.
-        self.assertNotIn("LEO satellite routing", arxiv["expression"])
-
-    def test_the_preview_matches_what_the_collector_would_send(self):
-        plan = self.data.plan()
-        since = datetime.fromisoformat(plan["since"])
-        arxiv = next(e for e in plan["plans"]["daily"] if e["source"] == "arxiv")
-        expected = arxiv_module.search_expression(
-            plan["anchors"], plan["groups"]["daily"], since, since
-        )
-
-        self.assertEqual(arxiv["expression"].split(" AND ")[0], expected.split(" AND ")[0])
-
-    def test_huggingface_filters_the_feed_with_the_same_net(self):
-        sources = self.by_source()
-        self.assertEqual(sources["huggingface"]["net_terms"], sources["arxiv"]["net_terms"])
-        self.assertIsNone(sources["huggingface"]["request_count"])
-
-    def test_ieee_is_described_but_marked_disabled(self):
-        ieee = self.by_source()["ieee_xplore"]
-        self.assertFalse(ieee["enabled"])
-        self.assertTrue(ieee["journals"])
-        self.assertEqual(ieee["request_count"], 2 * len(ieee["journals"]))
-
-
 class SaveQueriesTest(unittest.TestCase):
     def setUp(self):
         self._directory = tempfile.TemporaryDirectory()
@@ -520,15 +449,107 @@ class SaveQueriesTest(unittest.TestCase):
 
         self.assertEqual(self.settings.config_path.read_text(encoding="utf-8"), before)
 
-    def test_saved_queries_reach_the_plan_and_the_scorer_config(self):
+    def test_saved_queries_reach_the_reloaded_config(self):
         token = self.data.queries()["token"]
         self.data.save_queries({"daily": ['"brand new phrase" routing'], "weekly": []}, token)
-        plan = self.data.plan()
 
-        self.assertEqual(plan["groups"]["daily"], ['"brand new phrase" routing'])
-        arxiv = next(e for e in plan["plans"]["daily"] if e["source"] == "arxiv")
-        # A quoted span is specific enough to widen the net.
-        self.assertIn("brand new phrase", arxiv["net_terms"])
+        self.assertEqual(self.data.config["queries"]["daily"], ['"brand new phrase" routing'])
+        self.assertEqual(self.data.queries()["editable"]["weekly"], [])
+
+
+class SaveAxesTest(unittest.TestCase):
+    def setUp(self):
+        self._directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self._directory.cleanup)
+        self.settings = make_settings(Path(self._directory.name))
+        seed(self.settings)
+        self.data = DashboardData(self.settings)
+
+    def current(self) -> dict:
+        return {
+            entry["axis"]: [dict(tag) for tag in entry["editable"]]
+            for entry in self.data.scoring()["axes"]
+        }
+
+    def strip(self, axes: dict) -> dict:
+        return {
+            axis: [
+                {"tag": tag["tag"], "weight": tag["weight"], "terms": tag["terms"]}
+                for tag in tags
+            ]
+            for axis, tags in axes.items()
+        }
+
+    def test_adding_a_tag_and_a_term(self):
+        axes = self.strip(self.current())
+        axes["methods"].append({"tag": "diffusion", "weight": 12, "terms": ["diffusion policy"]})
+        axes["domains"][0]["terms"].append("LEO constellation")
+        token = self.data.scoring()["token"]
+
+        self.data.save_axes(axes, token)
+
+        config = yaml.safe_load(self.settings.config_path.read_text(encoding="utf-8"))
+        self.assertEqual(config["methods"]["diffusion"], {"weight": 12, "terms": ["diffusion policy"]})
+        self.assertIn("LEO constellation", config["domains"]["ntn_satellite"]["terms"])
+
+    def test_removing_a_tag_and_a_term(self):
+        axes = self.strip(self.current())
+        axes["methods"] = []
+        axes["domains"][0]["terms"] = ["LEO satellite"]
+        self.data.save_axes(axes, self.data.scoring()["token"])
+
+        config = yaml.safe_load(self.settings.config_path.read_text(encoding="utf-8"))
+        self.assertEqual(config["methods"], {})
+        self.assertEqual(config["domains"]["ntn_satellite"]["terms"], ["LEO satellite"])
+
+    def test_a_new_tag_changes_what_the_scorer_awards(self):
+        axes = self.strip(self.current())
+        axes["tasks"].append({"tag": "handover", "weight": 7, "terms": ["handover"]})
+        self.data.save_axes(axes, self.data.scoring()["token"])
+
+        breakdown = explain_score("Seamless handover for LEO satellite", "", self.data.config)
+        self.assertIn("handover", [match.tag for match in breakdown.matches])
+
+    def test_a_stale_token_is_refused_without_writing(self):
+        before = self.settings.config_path.read_text(encoding="utf-8")
+        with self.assertRaises(ConfigChanged):
+            self.data.save_axes(self.strip(self.current()), "stale")
+        self.assertEqual(self.settings.config_path.read_text(encoding="utf-8"), before)
+
+    def test_invalid_edits_are_refused_without_writing(self):
+        before = self.settings.config_path.read_text(encoding="utf-8")
+        for broken in (
+            {"tag": "", "weight": 5, "terms": ["x"]},
+            {"tag": "bad name", "weight": 5, "terms": ["x"]},
+            {"tag": "empty_terms", "weight": 5, "terms": []},
+            {"tag": "over_weight", "weight": 500, "terms": ["x"]},
+            {"tag": "dupe_terms", "weight": 5, "terms": ["x", "X"]},
+        ):
+            axes = self.strip(self.current())
+            axes["methods"].append(broken)
+            with self.subTest(tag=broken["tag"]), self.assertRaises((ValueError, TypeError)):
+                self.data.save_axes(axes, self.data.scoring()["token"])
+            self.assertEqual(self.settings.config_path.read_text(encoding="utf-8"), before)
+
+    def test_a_duplicate_tag_name_is_refused(self):
+        axes = self.strip(self.current())
+        axes["methods"].append({"tag": "marl", "weight": 5, "terms": ["x"]})
+        with self.assertRaises(ValueError):
+            self.data.save_axes(axes, self.data.scoring()["token"])
+
+    def test_saving_unchanged_axes_leaves_the_file_byte_identical(self):
+        before = self.settings.config_path.read_text(encoding="utf-8")
+        self.data.save_axes(self.strip(self.current()), self.data.scoring()["token"])
+        self.assertEqual(self.settings.config_path.read_text(encoding="utf-8"), before)
+
+    def test_queries_survive_a_tag_edit(self):
+        axes = self.strip(self.current())
+        axes["methods"][0]["weight"] = 20
+        self.data.save_axes(axes, self.data.scoring()["token"])
+
+        config = yaml.safe_load(self.settings.config_path.read_text(encoding="utf-8"))
+        self.assertEqual(config["queries"]["daily"], ["LEO satellite routing", "unused query"])
+        self.assertEqual(config["scoring"]["minimum_relevant"], 20)
 
 
 class ReportPeriodTest(unittest.TestCase):
@@ -596,13 +617,6 @@ class DashboardServerTest(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError) as caught:
             self.get("/api/papers/9999")
         self.assertEqual(caught.exception.code, 404)
-
-    def test_simulator_endpoint_scores_free_text(self):
-        status, body = self.get("/api/simulate?title=MARL%20routing&abstract=LEO%20satellite")
-        self.assertEqual(status, 200)
-        payload = json.loads(body)
-        self.assertGreater(payload["score"], 0)
-        self.assertTrue(payload["relevant"])
 
     def test_non_loopback_host_header_is_refused(self):
         with self.assertRaises(urllib.error.HTTPError) as caught:
@@ -685,14 +699,6 @@ class DashboardServerTest(unittest.TestCase):
             self.post("/api/overview", {"value": "keep"})
         self.assertEqual(caught.exception.code, 404)
 
-    def test_query_plan_endpoint(self):
-        status, body = self.get("/api/query-plan?since_hours=48")
-        self.assertEqual(status, 200)
-        payload = json.loads(body)
-        sources = {entry["source"] for entry in payload["plans"]["daily"]}
-        self.assertIn("arxiv", sources)
-        self.assertIn("openalex", sources)
-
     def test_saving_queries_over_http(self):
         _, body = self.get("/api/queries")
         token = json.loads(body)["token"]
@@ -706,6 +712,30 @@ class DashboardServerTest(unittest.TestCase):
             yaml.safe_load(self.settings.config_path.read_text(encoding="utf-8"))["queries"],
             {"daily": ["edited"], "weekly": []},
         )
+
+    def test_saving_tags_over_http(self):
+        _, body = self.get("/api/scoring")
+        scoring = json.loads(body)
+        axes = {
+            entry["axis"]: [
+                {"tag": tag["tag"], "weight": tag["weight"], "terms": tag["terms"]}
+                for tag in entry["editable"]
+            ]
+            for entry in scoring["axes"]
+        }
+        axes["tasks"].append({"tag": "handover", "weight": 6, "terms": ["handover", "handoff"]})
+
+        status, saved = self.post("/api/tags", {"token": scoring["token"], "axes": axes})
+        self.assertEqual(status, 200)
+        tasks = next(entry for entry in saved["axes"] if entry["axis"] == "tasks")
+        self.assertIn("handover", [tag["tag"] for tag in tasks["editable"]])
+        config = yaml.safe_load(self.settings.config_path.read_text(encoding="utf-8"))
+        self.assertEqual(config["tasks"]["handover"]["terms"], ["handover", "handoff"])
+
+    def test_a_tag_edit_with_a_stale_token_conflicts(self):
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            self.post("/api/tags", {"token": "stale", "axes": {}})
+        self.assertEqual(caught.exception.code, 409)
 
     def test_a_stale_token_conflicts(self):
         with self.assertRaises(urllib.error.HTTPError) as caught:
@@ -733,9 +763,23 @@ class DashboardServerTest(unittest.TestCase):
         self.assertEqual(caught.exception.code, 403)
 
     def test_oversized_bodies_are_refused(self):
+        padding = "x" * (64 * 1024 + 1)
         with self.assertRaises(urllib.error.HTTPError) as caught:
-            self.post(f"/api/papers/{self.paper_id}/feedback", {"value": "keep", "pad": "x" * 5000})
+            self.post(f"/api/papers/{self.paper_id}/feedback", {"value": "keep", "pad": padding})
         self.assertEqual(caught.exception.code, 400)
+
+    def test_a_full_tag_config_fits_within_the_body_limit(self):
+        _, body = self.get("/api/scoring")
+        scoring = json.loads(body)
+        axes = {
+            entry["axis"]: [
+                {"tag": tag["tag"], "weight": tag["weight"], "terms": tag["terms"] * 20}
+                for tag in entry["editable"]
+            ]
+            for entry in scoring["axes"]
+        }
+        payload = json.dumps({"token": scoring["token"], "axes": axes})
+        self.assertLess(len(payload.encode("utf-8")), 64 * 1024)
 
 
 if __name__ == "__main__":
