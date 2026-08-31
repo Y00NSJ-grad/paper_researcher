@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from radar.models import PaperSummary
+from radar.models import MonthlyTrendAnalysis, PaperSummary, TrendSection
 
 KST = ZoneInfo("Asia/Seoul")
 
@@ -98,7 +98,35 @@ def trend_counts(rows: Iterable[dict]) -> tuple[Counter[str], Counter[str]]:
     return tag_counts, pair_counts
 
 
-def render_trend_report(kind: str, rows: list[dict], days: int) -> str:
+def _render_analysis_section(
+    title: str,
+    section: TrendSection,
+    paper_links: dict[str, tuple[str, str]],
+) -> list[str]:
+    lines = [f"### {title}", "", section.overview, "", "**핵심 동향**", ""]
+    lines.extend(f"- {trend}" for trend in section.key_trends)
+    lines.extend(["", "**근거**", ""])
+    for evidence in section.evidence:
+        citations = [
+            f"[{paper_links[paper_id][0]}]({paper_links[paper_id][1]})"
+            for paper_id in evidence.paper_ids
+            if paper_id in paper_links
+        ]
+        suffix = f" ({'; '.join(citations)})" if citations else ""
+        lines.append(f"- {evidence.claim}{suffix}")
+    lines.extend(["", "**연구 기회**", ""])
+    lines.extend(f"- {item}" for item in section.research_opportunities)
+    lines.extend(["", "**한계 및 주의점**", ""])
+    lines.extend(f"- {item}" for item in section.limitations)
+    return lines
+
+
+def render_trend_report(
+    kind: str,
+    rows: list[dict],
+    days: int,
+    analysis: MonthlyTrendAnalysis | None = None,
+) -> str:
     now = datetime.now(KST)
     tag_counts, pair_counts = trend_counts(rows)
     lines = [
@@ -106,9 +134,26 @@ def render_trend_report(kind: str, rows: list[dict], days: int) -> str:
         "",
         f"Window: last {days} days · Unique papers: {len(rows)}",
         "",
-        "> Repeated combinations",
-        "",
     ]
+    if analysis is not None:
+        paper_links = {f"P{row['id']}": (row["title"], row["primary_url"]) for row in rows}
+        lines.extend(
+            [
+                "## GPT Research Trend Analysis",
+                "",
+                analysis.executive_summary,
+                "",
+                *_render_analysis_section("Physical AI 부문", analysis.physical_ai, paper_links),
+                "",
+                *_render_analysis_section("Quantum AI 부문", analysis.quantum_ai, paper_links),
+                "",
+                *_render_analysis_section("도메인 부문", analysis.domains, paper_links),
+                "",
+                "## Quantitative Signals",
+                "",
+            ]
+        )
+    lines.extend(["> Repeated combinations", ""])
     repeated = [(name, count) for name, count in pair_counts.most_common(15) if count >= 2]
     if repeated:
         lines.extend(f"- {name}: {count} papers" for name, count in repeated)

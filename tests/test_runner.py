@@ -1,12 +1,14 @@
 import tempfile
 import unittest
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from unittest.mock import patch
 
 import httpx
 
 from radar.config import Settings
-from radar.models import PaperCandidate
+from radar.models import MonthlyTrendAnalysis, PaperCandidate, TrendSection
 from radar.runner import CATCHUP_LIMIT_DAYS, RadarRunner
 
 
@@ -290,6 +292,36 @@ class RunnerTest(unittest.TestCase):
             )
             runner = RadarRunner(settings)
             self.assertNotIn("ieee_xplore", [collector.name for collector in runner.collectors])
+
+    def test_monthly_report_uses_gpt_analysis_when_configured(self):
+        with tempfile.TemporaryDirectory() as directory:
+            settings = replace(self._settings(Path(directory)), openai_api_key="test-key")
+            runner = RadarRunner(settings, collectors=[])
+            row = {
+                "id": 1,
+                "title": "Physical AI for UAVs",
+                "abstract": "An embodied controller.",
+                "venue": "Test Venue",
+                "published_at": "2026-08-20T00:00:00+00:00",
+                "first_seen_at": "2026-08-21T00:00:00+00:00",
+                "tags_json": '{"methods":["physical_ai"]}',
+                "score": 70.0,
+                "primary_url": "https://example.test/paper",
+            }
+            section = TrendSection(overview="분석", limitations=["표본 부족"])
+            analysis = MonthlyTrendAnalysis("요약", section, section, section)
+
+            with (
+                patch.object(runner.store, "recent_papers", return_value=[row]),
+                patch("radar.runner.OpenAITrendAnalyzer") as analyzer_type,
+            ):
+                analyzer_type.return_value.analyze.return_value = analysis
+                path = runner.trend_report("monthly-trends", days=30, dry_run=True)
+
+            analyzer_type.return_value.analyze.assert_called_once_with([row], 30)
+            content = path.read_text(encoding="utf-8")
+            self.assertIn("GPT Research Trend Analysis", content)
+            self.assertIn("Physical AI 부문", content)
 
 
 if __name__ == "__main__":

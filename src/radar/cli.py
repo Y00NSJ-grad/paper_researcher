@@ -24,7 +24,9 @@ def build_parser() -> argparse.ArgumentParser:
     weekly.add_argument("--dry-run", action="store_true")
     weekly.add_argument("--skip-collect", action="store_true")
 
-    monthly = subparsers.add_parser("monthly", help="Build a 30-day trend map")
+    monthly = subparsers.add_parser(
+        "monthly", help="Analyze 30-day Physical AI, Quantum AI, and domain trends"
+    )
     monthly.add_argument("--days", type=int, default=30)
     monthly.add_argument("--dry-run", action="store_true")
 

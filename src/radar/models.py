@@ -58,3 +58,25 @@ class PaperSummary:
             f"Can I use it?: {self.can_i_use_it}",
         ]
 
+
+@dataclass(slots=True)
+class TrendEvidence:
+    claim: str
+    paper_ids: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class TrendSection:
+    overview: str
+    key_trends: list[str] = field(default_factory=list)
+    evidence: list[TrendEvidence] = field(default_factory=list)
+    research_opportunities: list[str] = field(default_factory=list)
+    limitations: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class MonthlyTrendAnalysis:
+    executive_summary: str
+    physical_ai: TrendSection
+    quantum_ai: TrendSection
+    domains: TrendSection

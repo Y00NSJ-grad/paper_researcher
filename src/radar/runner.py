@@ -21,7 +21,7 @@ from radar.models import PaperCandidate
 from radar.reports import render_digest, render_trend_report, write_report
 from radar.scoring import score_paper
 from radar.storage import PaperStore
-from radar.summarizer import OpenAISummarizer
+from radar.summarizer import OpenAISummarizer, OpenAITrendAnalyzer
 
 logger = logging.getLogger(__name__)
 
@@ -193,7 +193,18 @@ class RadarRunner:
 
     def trend_report(self, kind: str, days: int, dry_run: bool) -> Path:
         rows = self.store.recent_papers(days=days)
-        content = render_trend_report(kind, rows, days)
+        analysis = None
+        if kind == "monthly-trends" and rows and self.settings.openai_api_key:
+            try:
+                analysis = OpenAITrendAnalyzer(
+                    api_key=self.settings.openai_api_key,
+                    model=self.settings.openai_model,
+                ).analyze(rows, days)
+            except Exception:
+                logger.exception("Failed to generate monthly GPT trend analysis")
+        elif kind == "monthly-trends" and not self.settings.openai_api_key:
+            logger.warning("OPENAI_API_KEY is absent; monthly report uses quantitative trends only")
+        content = render_trend_report(kind, rows, days, analysis=analysis)
         path = write_report(self.settings.output_dir, kind, content)
         self._deliver(content, dry_run)
         return path

@@ -223,6 +223,11 @@ uv run paper-radar monthly --days 30
 OpenAI API key가 비어 있다면 `--summarize` 값과 관계없이 OpenAI 호출은 건너뜁니다.
 명시적으로 요약을 끄려면 `--summarize 0`을 사용합니다.
 
+Monthly 리포트는 최근 기간에 저장된 논문 제목·초록·태그를 GPT가 분석하여
+Physical AI, Quantum AI, 도메인 동향을 각각 정리합니다. 분석 문장은 논문 링크를
+근거로 제시하며, `OPENAI_API_KEY`가 없거나 호출에 실패하면 기존 정량 Trend Map으로
+자동 폴백합니다.
+
 ## 로컬 대시보드
 
 SQLite에 쌓인 데이터, 쿼리 실적, 점수 책정 과정, Trend Map을 브라우저에서 확인합니다.
