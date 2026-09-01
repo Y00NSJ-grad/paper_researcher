@@ -2,10 +2,18 @@ from __future__ import annotations
 
 import argparse
 import logging
+from pathlib import Path
+
+from dotenv import load_dotenv
 
 from radar.config import Settings
 from radar.dashboard import serve
 from radar.runner import RadarRunner
+
+
+def load_local_env(path: Path = Path(".env")) -> None:
+    """Load local CLI secrets without overriding an explicit process environment."""
+    load_dotenv(dotenv_path=path, override=False)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -41,6 +49,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
+    load_local_env()
     args = build_parser().parse_args()
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
