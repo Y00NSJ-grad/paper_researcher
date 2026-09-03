@@ -7,7 +7,13 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from radar.models import PaperSummary
+from radar.models import (
+    MonthlyTrendAnalysis,
+    PaperSummary,
+    TrendSection,
+    WeeklyInsight,
+    WeeklyTrendAnalysis,
+)
 
 KST = ZoneInfo("Asia/Seoul")
 
@@ -98,7 +104,124 @@ def trend_counts(rows: Iterable[dict]) -> tuple[Counter[str], Counter[str]]:
     return tag_counts, pair_counts
 
 
-def render_trend_report(kind: str, rows: list[dict], days: int) -> str:
+def _render_analysis_section(
+    title: str,
+    section: TrendSection,
+    paper_links: dict[str, tuple[str, str]],
+) -> list[str]:
+    lines = [f"### {title}", "", section.overview, "", "**핵심 동향**", ""]
+    lines.extend(f"- {trend}" for trend in section.key_trends)
+    lines.extend(["", "**근거**", ""])
+    for evidence in section.evidence:
+        citations = [
+            f"[{paper_links[paper_id][0]}]({paper_links[paper_id][1]})"
+            for paper_id in evidence.paper_ids
+            if paper_id in paper_links
+        ]
+        suffix = f" ({'; '.join(citations)})" if citations else ""
+        lines.append(f"- {evidence.claim}{suffix}")
+    lines.extend(["", "**연구 기회**", ""])
+    lines.extend(f"- {item}" for item in section.research_opportunities)
+    lines.extend(["", "**한계 및 주의점**", ""])
+    lines.extend(f"- {item}" for item in section.limitations)
+    return lines
+
+
+def _evidence_suffix(paper_ids: list[str], paper_links: dict[str, tuple[str, str]]) -> str:
+    citations = [
+        f"[{paper_links[paper_id][0]}]({paper_links[paper_id][1]})"
+        for paper_id in paper_ids
+        if paper_id in paper_links
+    ]
+    return f" ({'; '.join(citations)})" if citations else ""
+
+
+def _render_weekly_insights(
+    title: str,
+    insights: list[WeeklyInsight],
+    paper_links: dict[str, tuple[str, str]],
+) -> list[str]:
+    lines = [f"### {title}", ""]
+    if not insights:
+        return [*lines, "- 근거가 충분한 신호가 없습니다."]
+    for item in insights:
+        suffix = _evidence_suffix(item.paper_ids, paper_links)
+        lines.append(f"- **{item.title}** · `{item.confidence}` — {item.insight}{suffix}")
+    return lines
+
+
+def _render_weekly_analysis(
+    analysis: WeeklyTrendAnalysis,
+    paper_links: dict[str, tuple[str, str]],
+    coverage: dict,
+) -> list[str]:
+    lines = ["## GPT Weekly Research Pulse", "", analysis.research_pulse, ""]
+    lines.extend(
+        _render_weekly_insights("Emerging Signals", analysis.emerging_signals, paper_links)
+    )
+    lines.extend(
+        [
+            "",
+            *_render_weekly_insights(
+                "Cross-domain Convergence",
+                analysis.cross_domain_convergence,
+                paper_links,
+            ),
+            "",
+            "### Papers Worth Reading",
+            "",
+        ]
+    )
+    valid_picks = [
+        (item, paper_links[item.paper_id])
+        for item in analysis.papers_worth_reading
+        if item.paper_id in paper_links
+    ]
+    if valid_picks:
+        for item, paper in valid_picks:
+            lines.append(f"- **{item.role}** — [{paper[0]}]({paper[1]}): {item.why}")
+    else:
+        lines.append("- 이번 주 추천할 근거 충분한 논문이 없습니다.")
+    lines.extend(
+        [
+            "",
+            *_render_weekly_insights(
+                "Research Opportunities", analysis.research_opportunities, paper_links
+            ),
+            "",
+            *_render_weekly_insights("Watchlist for Next Week", analysis.watchlist, paper_links),
+            "",
+            "### Data Coverage & Confidence",
+            "",
+            analysis.data_coverage,
+            "",
+            f"- Pipeline runs: {coverage.get('runs', 0)}",
+            f"- Source errors: {coverage.get('source_errors', 0)}",
+        ]
+    )
+    source_papers = coverage.get("source_papers", {})
+    if source_papers:
+        lines.append(
+            "- Source coverage: "
+            + " · ".join(f"{source} {count}" for source, count in sorted(source_papers.items()))
+        )
+    source_failures = coverage.get("source_failures", {})
+    if source_failures:
+        lines.append(
+            "- Failures by source: "
+            + " · ".join(f"{source} {count}" for source, count in sorted(source_failures.items()))
+        )
+    return lines
+
+
+def render_trend_report(
+    kind: str,
+    rows: list[dict],
+    days: int,
+    analysis: MonthlyTrendAnalysis | WeeklyTrendAnalysis | None = None,
+    evidence_rows: list[dict] | None = None,
+    collection_coverage: dict | None = None,
+) -> str:
     now = datetime.now(KST)
     tag_counts, pair_counts = trend_counts(rows)
     lines = [
@@ -106,9 +229,41 @@ def render_trend_report(kind: str, rows: list[dict], days: int) -> str:
         "",
         f"Window: last {days} days · Unique papers: {len(rows)}",
         "",
-        "> Repeated combinations",
-        "",
     ]
+    if isinstance(analysis, MonthlyTrendAnalysis):
+        paper_links = {f"P{row['id']}": (row["title"], row["primary_url"]) for row in rows}
+        lines.extend(
+            [
+                "## GPT Research Trend Analysis",
+                "",
+                analysis.executive_summary,
+                "",
+                *_render_analysis_section("Physical AI 부문", analysis.physical_ai, paper_links),
+                "",
+                *_render_analysis_section("Quantum AI 부문", analysis.quantum_ai, paper_links),
+                "",
+                *_render_analysis_section("도메인 부문", analysis.domains, paper_links),
+                "",
+                "## Quantitative Signals",
+                "",
+            ]
+        )
+    elif isinstance(analysis, WeeklyTrendAnalysis):
+        linked_rows = evidence_rows if evidence_rows is not None else rows
+        paper_links = {f"P{row['id']}": (row["title"], row["primary_url"]) for row in linked_rows}
+        lines.extend(
+            [
+                *_render_weekly_analysis(
+                    analysis,
+                    paper_links,
+                    collection_coverage or {},
+                ),
+                "",
+                "## Quantitative Signals",
+                "",
+            ]
+        )
+    lines.extend(["> Repeated combinations", ""])
     repeated = [(name, count) for name, count in pair_counts.most_common(15) if count >= 2]
     if repeated:
         lines.extend(f"- {name}: {count} papers" for name, count in repeated)

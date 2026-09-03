@@ -12,6 +12,7 @@ dependencies = [
   "httpx>=0.27,<1",
   "openai>=2,<3",
   "pydantic>=2.10,<3",
+  "python-dotenv>=1,<2",
   "PyYAML>=6,<7",
 ]
 

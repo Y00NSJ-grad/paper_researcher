@@ -2,10 +2,18 @@ from __future__ import annotations
 
 import argparse
 import logging
+from pathlib import Path
+
+from dotenv import load_dotenv
 
 from radar.config import Settings
 from radar.dashboard import serve
 from radar.runner import RadarRunner
+
+
+def load_local_env(path: Path = Path(".env")) -> None:
+    """Load local CLI secrets without overriding an explicit process environment."""
+    load_dotenv(dotenv_path=path, override=False)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -20,11 +28,15 @@ def build_parser() -> argparse.ArgumentParser:
     daily.add_argument("--limit-per-query", type=int, default=25)
     daily.add_argument("--dry-run", action="store_true")
 
-    weekly = subparsers.add_parser("weekly", help="Collect weekly queries and update trend map")
+    weekly = subparsers.add_parser(
+        "weekly", help="Collect papers and analyze weekly changes against a 28-day baseline"
+    )
     weekly.add_argument("--dry-run", action="store_true")
     weekly.add_argument("--skip-collect", action="store_true")
 
-    monthly = subparsers.add_parser("monthly", help="Build a 30-day trend map")
+    monthly = subparsers.add_parser(
+        "monthly", help="Analyze 30-day Physical AI, Quantum AI, and domain trends"
+    )
     monthly.add_argument("--days", type=int, default=30)
     monthly.add_argument("--dry-run", action="store_true")
 
@@ -39,6 +51,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
+    load_local_env()
     args = build_parser().parse_args()
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,

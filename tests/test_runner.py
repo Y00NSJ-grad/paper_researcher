@@ -1,13 +1,20 @@
 import tempfile
 import unittest
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from unittest.mock import patch
 
 import httpx
 
 from radar.config import Settings
-from radar.models import PaperCandidate
-from radar.runner import CATCHUP_LIMIT_DAYS, RadarRunner
+from radar.models import (
+    MonthlyTrendAnalysis,
+    PaperCandidate,
+    TrendSection,
+    WeeklyTrendAnalysis,
+)
+from radar.runner import CATCHUP_LIMIT_DAYS, WEEKLY_BASELINE_DAYS, RadarRunner
 
 
 class FixtureCollector:
@@ -290,6 +297,78 @@ class RunnerTest(unittest.TestCase):
             )
             runner = RadarRunner(settings)
             self.assertNotIn("ieee_xplore", [collector.name for collector in runner.collectors])
+
+    def test_monthly_report_uses_gpt_analysis_when_configured(self):
+        with tempfile.TemporaryDirectory() as directory:
+            settings = replace(self._settings(Path(directory)), openai_api_key="test-key")
+            runner = RadarRunner(settings, collectors=[])
+            row = {
+                "id": 1,
+                "title": "Physical AI for UAVs",
+                "abstract": "An embodied controller.",
+                "venue": "Test Venue",
+                "published_at": "2026-08-20T00:00:00+00:00",
+                "first_seen_at": "2026-08-21T00:00:00+00:00",
+                "tags_json": '{"methods":["physical_ai"]}',
+                "score": 70.0,
+                "primary_url": "https://example.test/paper",
+            }
+            section = TrendSection(overview="분석", limitations=["표본 부족"])
+            analysis = MonthlyTrendAnalysis("요약", section, section, section)
+
+            with (
+                patch.object(runner.store, "recent_papers", return_value=[row]),
+                patch("radar.runner.OpenAITrendAnalyzer") as analyzer_type,
+            ):
+                analyzer_type.return_value.analyze.return_value = analysis
+                path = runner.trend_report("monthly-trends", days=30, dry_run=True)
+
+            analyzer_type.return_value.analyze.assert_called_once_with([row], 30)
+            content = path.read_text(encoding="utf-8")
+            self.assertIn("GPT Research Trend Analysis", content)
+            self.assertIn("Physical AI 부문", content)
+
+    def test_weekly_report_compares_current_rows_with_28_day_baseline(self):
+        with tempfile.TemporaryDirectory() as directory:
+            settings = replace(self._settings(Path(directory)), openai_api_key="test-key")
+            runner = RadarRunner(settings, collectors=[])
+            now = datetime.now(UTC)
+
+            def row(paper_id: int, age_days: int) -> dict:
+                return {
+                    "id": paper_id,
+                    "title": f"Paper {paper_id}",
+                    "abstract": "Research abstract.",
+                    "venue": "Test Venue",
+                    "published_at": (now - timedelta(days=age_days)).isoformat(),
+                    "first_seen_at": (now - timedelta(days=age_days)).isoformat(),
+                    "tags_json": '{"domains":["sagin"]}',
+                    "score": 70.0,
+                    "primary_url": f"https://example.test/{paper_id}",
+                }
+
+            current = row(1, 2)
+            baseline = row(2, 14)
+            analysis = WeeklyTrendAnalysis(research_pulse="주간 변화")
+            coverage = {"runs": 7, "source_errors": 0, "source_papers": {"arxiv": 1}}
+
+            with (
+                patch.object(
+                    runner.store,
+                    "recent_papers",
+                    return_value=[current, baseline],
+                ) as recent,
+                patch.object(runner.store, "collection_health", return_value=coverage),
+                patch("radar.runner.OpenAIWeeklyTrendAnalyzer") as analyzer_type,
+            ):
+                analyzer_type.return_value.analyze.return_value = analysis
+                path = runner.trend_report("weekly-trends", days=7, dry_run=True)
+
+            recent.assert_called_once_with(days=7 + WEEKLY_BASELINE_DAYS, limit=300)
+            analyzer_type.return_value.analyze.assert_called_once_with(
+                [current], [baseline], 7, coverage
+            )
+            self.assertIn("GPT Weekly Research Pulse", path.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

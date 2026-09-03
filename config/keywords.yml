@@ -7,6 +7,7 @@ methods:
       - MARL
       - MAPPO
       - QMIX
+      - CTDE
   reinforcement_learning:
     weight: 8
     terms:
@@ -130,7 +131,7 @@ queries:
     - 'world model robotics trajectory control'
     - 'diffusion policy multi-agent trajectory'
     - 'digital twin 6G reinforcement learning'
-    - 'quantum reinforcement learning resource allocation'
+    - 'quantum reinforcement learning'
     - 'airport scheduling reinforcement learning'
 
 # arXiv and Hugging Face are collected as one wide net over every `domains` term

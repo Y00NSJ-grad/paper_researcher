@@ -21,12 +21,13 @@ from radar.models import PaperCandidate
 from radar.reports import render_digest, render_trend_report, write_report
 from radar.scoring import score_paper
 from radar.storage import PaperStore
-from radar.summarizer import OpenAISummarizer
+from radar.summarizer import OpenAISummarizer, OpenAITrendAnalyzer, OpenAIWeeklyTrendAnalyzer
 
 logger = logging.getLogger(__name__)
 
 # How far a recovering source may reach back to cover runs it missed.
 CATCHUP_LIMIT_DAYS = 14
+WEEKLY_BASELINE_DAYS = 28
 
 
 def _safe_error(exc: Exception) -> str:
@@ -161,7 +162,6 @@ class RadarRunner:
             if kind == "daily":
                 rows = [row for row in rows if int(row["id"]) in new_ids]
             rows = rows[:top_n]
-            self._summarize_rows(rows[:summarize_n])
             refreshed = {
                 int(row["id"]): row for row in self.store.papers_for_run(run_id, row_limit)
             }
@@ -192,8 +192,58 @@ class RadarRunner:
         return max(last_success, now - timedelta(days=CATCHUP_LIMIT_DAYS))
 
     def trend_report(self, kind: str, days: int, dry_run: bool) -> Path:
-        rows = self.store.recent_papers(days=days)
-        content = render_trend_report(kind, rows, days)
+        analysis = None
+        evidence_rows = None
+        collection_coverage = None
+        if kind == "weekly-trends":
+            now = datetime.now(UTC)
+            current_cutoff = now - timedelta(days=days)
+            all_rows = self.store.recent_papers(
+                days=days + WEEKLY_BASELINE_DAYS,
+                limit=300,
+            )
+            rows = [
+                row
+                for row in all_rows
+                if datetime.fromisoformat(row["first_seen_at"]) >= current_cutoff
+            ]
+            current_ids = {int(row["id"]) for row in rows}
+            baseline_rows = [row for row in all_rows if int(row["id"]) not in current_ids]
+            evidence_rows = all_rows
+            collection_coverage = self.store.collection_health(days)
+            if rows and self.settings.openai_api_key:
+                try:
+                    analysis = OpenAIWeeklyTrendAnalyzer(
+                        api_key=self.settings.openai_api_key,
+                        model=self.settings.openai_model,
+                    ).analyze(rows, baseline_rows, days, collection_coverage)
+                except Exception:
+                    logger.exception("Failed to generate weekly GPT trend analysis")
+            elif not self.settings.openai_api_key:
+                logger.warning(
+                    "OPENAI_API_KEY is absent; weekly report uses quantitative trends only"
+                )
+        else:
+            rows = self.store.recent_papers(days=days)
+
+        if kind == "monthly-trends" and rows and self.settings.openai_api_key:
+            try:
+                analysis = OpenAITrendAnalyzer(
+                    api_key=self.settings.openai_api_key,
+                    model=self.settings.openai_model,
+                ).analyze(rows, days)
+            except Exception:
+                logger.exception("Failed to generate monthly GPT trend analysis")
+        elif kind == "monthly-trends" and not self.settings.openai_api_key:
+            logger.warning("OPENAI_API_KEY is absent; monthly report uses quantitative trends only")
+        content = render_trend_report(
+            kind,
+            rows,
+            days,
+            analysis=analysis,
+            evidence_rows=evidence_rows,
+            collection_coverage=collection_coverage,
+        )
         path = write_report(self.settings.output_dir, kind, content)
         self._deliver(content, dry_run)
         return path

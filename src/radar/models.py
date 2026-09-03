@@ -58,3 +58,51 @@ class PaperSummary:
             f"Can I use it?: {self.can_i_use_it}",
         ]
 
+
+@dataclass(slots=True)
+class TrendEvidence:
+    claim: str
+    paper_ids: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class TrendSection:
+    overview: str
+    key_trends: list[str] = field(default_factory=list)
+    evidence: list[TrendEvidence] = field(default_factory=list)
+    research_opportunities: list[str] = field(default_factory=list)
+    limitations: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class MonthlyTrendAnalysis:
+    executive_summary: str
+    physical_ai: TrendSection
+    quantum_ai: TrendSection
+    domains: TrendSection
+
+
+@dataclass(slots=True)
+class WeeklyInsight:
+    title: str
+    insight: str
+    confidence: str
+    paper_ids: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class WeeklyPaperPick:
+    paper_id: str
+    role: str
+    why: str
+
+
+@dataclass(slots=True)
+class WeeklyTrendAnalysis:
+    research_pulse: str
+    emerging_signals: list[WeeklyInsight] = field(default_factory=list)
+    cross_domain_convergence: list[WeeklyInsight] = field(default_factory=list)
+    papers_worth_reading: list[WeeklyPaperPick] = field(default_factory=list)
+    research_opportunities: list[WeeklyInsight] = field(default_factory=list)
+    watchlist: list[WeeklyInsight] = field(default_factory=list)
+    data_coverage: str = ""

@@ -40,6 +40,39 @@ class StorageTest(unittest.TestCase):
             self.assertIn("query-one", rows[0]["query_ids_json"])
             self.assertIn("query-two", rows[0]["query_ids_json"])
 
+    def test_collection_health_reports_runs_errors_and_source_coverage(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = PaperStore(Path(directory) / "papers.db")
+            store.initialize()
+            run_id = store.start_run("daily")
+            candidate = PaperCandidate(
+                source="arxiv",
+                source_id="2609.00001",
+                arxiv_id="2609.00001",
+                title="A Recent Paper",
+                abstract="An abstract.",
+                authors=["A. Researcher"],
+                published_at=datetime.now(UTC),
+                url="https://arxiv.org/abs/2609.00001",
+            )
+            store.upsert_scored(
+                ScoredPaper(candidate, 50, {"domains": ["sagin"]}, ["fixture"]),
+                run_id,
+            )
+            store.finish_run(
+                run_id,
+                "partial",
+                {"source_errors": 2},
+                "arxiv batch failed: timeout\nopenalex query failed ('x'): HTTP 429",
+            )
+
+            health = store.collection_health(7)
+
+            self.assertEqual(health["runs"], 1)
+            self.assertEqual(health["source_errors"], 2)
+            self.assertEqual(health["source_failures"], {"arxiv": 1, "openalex": 1})
+            self.assertEqual(health["source_papers"], {"arxiv": 1})
+
 
 if __name__ == "__main__":
     unittest.main()

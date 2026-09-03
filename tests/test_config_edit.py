@@ -7,9 +7,15 @@ from pathlib import Path
 import yaml
 
 from radar.config import (
+    AXES,
     config_token,
+    flow_style_tags,
+    render_axis_block,
+    replace_block,
     replace_queries_block,
+    validate_axes,
     validate_queries,
+    write_axes,
     write_queries,
 )
 
@@ -18,6 +24,18 @@ methods:
   marl:
     weight: 14
     terms: [MARL, multi-agent reinforcement learning]
+
+domains:
+  ntn_satellite:
+    weight: 18
+    terms:
+      - LEO satellite
+      - non-terrestrial network
+
+tasks:
+  routing:
+    weight: 6
+    terms: [routing]
 
 # A comment that must survive an edit.
 queries:
@@ -97,6 +115,102 @@ class ReplaceQueriesBlockTest(unittest.TestCase):
         parsed = yaml.safe_load(rewritten)
         self.assertEqual(parsed["queries"]["daily"], ["new"])
         self.assertEqual(parsed["scoring"]["max_score"], 100)
+
+
+class AxisBlockTest(unittest.TestCase):
+    def axes_of(self, text: str) -> dict:
+        parsed = yaml.safe_load(text)
+        return {
+            axis: [
+                {"tag": tag, "weight": body["weight"], "terms": body["terms"]}
+                for tag, body in (parsed.get(axis) or {}).items()
+            ]
+            for axis in AXES
+        }
+
+    def rewrite(self, text: str, axes: dict) -> str:
+        cleaned = validate_axes(axes)
+        for axis, tags in cleaned.items():
+            text = replace_block(
+                text, axis, render_axis_block(axis, tags, flow_style_tags(text, axis))
+            )
+        return text
+
+    def test_an_unchanged_rewrite_is_byte_identical(self):
+        self.assertEqual(self.rewrite(SAMPLE, self.axes_of(SAMPLE)), SAMPLE)
+
+    def test_inline_terms_keep_their_style(self):
+        axes = self.axes_of(SAMPLE)
+        axes["tasks"][0]["terms"].append("route optimization")
+        rewritten = self.rewrite(SAMPLE, axes)
+
+        self.assertIn("    terms: [routing, route optimization]", rewritten)
+        # A block-style tag stays block style.
+        self.assertIn("      - LEO satellite", rewritten)
+
+    def test_a_term_needing_quotes_forces_block_style(self):
+        axes = self.axes_of(SAMPLE)
+        axes["tasks"][0]["terms"].append("sensing, communication, and computation")
+        rewritten = self.rewrite(SAMPLE, axes)
+
+        # A comma cannot survive inline, so this tag drops to block style.
+        self.assertNotIn("terms: [routing", rewritten)
+        self.assertEqual(
+            yaml.safe_load(rewritten)["tasks"]["routing"]["terms"],
+            ["routing", "sensing, communication, and computation"],
+        )
+
+    def test_terms_that_would_parse_as_other_types_are_quoted(self):
+        axes = self.axes_of(SAMPLE)
+        axes["methods"][0]["terms"] = ["5", "true", "no", "on", "MARL"]
+        rewritten = self.rewrite(SAMPLE, axes)
+
+        self.assertEqual(
+            yaml.safe_load(rewritten)["methods"]["marl"]["terms"],
+            ["5", "true", "no", "on", "MARL"],
+        )
+
+    def test_an_emptied_axis_renders_as_an_empty_mapping(self):
+        rewritten = self.rewrite(SAMPLE, {**self.axes_of(SAMPLE), "methods": []})
+        self.assertEqual(yaml.safe_load(rewritten)["methods"], {})
+
+    def test_comments_and_queries_survive_a_tag_edit(self):
+        axes = self.axes_of(SAMPLE)
+        axes["domains"].append({"tag": "new_domain", "weight": 9, "terms": ["fresh"]})
+        rewritten = self.rewrite(SAMPLE, axes)
+
+        self.assertIn("# A comment that must survive an edit.", rewritten)
+        self.assertIn("# Anchors widen the arXiv net.", rewritten)
+        parsed = yaml.safe_load(rewritten)
+        self.assertEqual(parsed["domains"]["new_domain"], {"weight": 9, "terms": ["fresh"]})
+        self.assertEqual(len(parsed["queries"]["daily"]), 2)
+
+
+class WriteAxesTest(unittest.TestCase):
+    def test_only_changed_axes_are_rewritten(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = write_sample(Path(directory))
+            axes = {
+                "methods": [{"tag": "marl", "weight": 14, "terms": ["MARL"]}],
+                "domains": [{"tag": "ntn", "weight": 18, "terms": ["LEO satellite"]}],
+                "tasks": [{"tag": "routing", "weight": 6, "terms": ["routing"]}],
+            }
+            write_axes(path, axes)
+            parsed = yaml.safe_load(path.read_text(encoding="utf-8"))
+
+            self.assertEqual(parsed["methods"]["marl"]["terms"], ["MARL"])
+            self.assertEqual(parsed["domains"]["ntn"]["weight"], 18)
+            self.assertEqual(list(Path(directory).iterdir()), [path])
+
+    def test_a_rejected_edit_leaves_the_file_untouched(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = write_sample(Path(directory))
+            before = path.read_text(encoding="utf-8")
+
+            with self.assertRaises(ValueError):
+                write_axes(path, {"methods": [{"tag": "x", "weight": 1, "terms": []}]})
+
+            self.assertEqual(path.read_text(encoding="utf-8"), before)
 
 
 class WriteQueriesTest(unittest.TestCase):
