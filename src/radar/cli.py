@@ -28,7 +28,9 @@ def build_parser() -> argparse.ArgumentParser:
     daily.add_argument("--limit-per-query", type=int, default=25)
     daily.add_argument("--dry-run", action="store_true")
 
-    weekly = subparsers.add_parser("weekly", help="Collect weekly queries and update trend map")
+    weekly = subparsers.add_parser(
+        "weekly", help="Collect papers and analyze weekly changes against a 28-day baseline"
+    )
     weekly.add_argument("--dry-run", action="store_true")
     weekly.add_argument("--skip-collect", action="store_true")
 

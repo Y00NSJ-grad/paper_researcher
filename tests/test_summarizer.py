@@ -6,8 +6,13 @@ from radar.summarizer import (
     MAX_ABSTRACT_CHARS,
     MonthlyTrendSchema,
     OpenAITrendAnalyzer,
+    OpenAIWeeklyTrendAnalyzer,
     TrendEvidenceSchema,
     TrendSectionSchema,
+    WeeklyInsightSchema,
+    WeeklyPaperPickSchema,
+    WeeklyTrendSchema,
+    weekly_signal_metrics,
 )
 
 
@@ -63,6 +68,71 @@ class TrendAnalyzerTest(unittest.TestCase):
         self.assertEqual(payload[0]["id"], "P12")
         self.assertEqual(len(payload[0]["abstract"]), MAX_ABSTRACT_CHARS)
         self.assertIs(responses.kwargs["text_format"], MonthlyTrendSchema)
+
+    def test_weekly_analyzer_compares_current_week_with_baseline(self):
+        insight = WeeklyInsightSchema(
+            title="새 결합",
+            insight="이번 주 처음 관찰됨",
+            confidence="Weak",
+            paper_ids=["P21"],
+        )
+        responses = _Responses(
+            WeeklyTrendSchema(
+                research_pulse="이번 주 펄스",
+                emerging_signals=[insight],
+                cross_domain_convergence=[insight],
+                papers_worth_reading=[
+                    WeeklyPaperPickSchema(paper_id="P21", role="새 아이디어", why="직접 관련")
+                ],
+                research_opportunities=[insight],
+                watchlist=[insight],
+                data_coverage="표본이 작습니다.",
+            )
+        )
+        analyzer = OpenAIWeeklyTrendAnalyzer.__new__(OpenAIWeeklyTrendAnalyzer)
+        analyzer.client = SimpleNamespace(responses=responses)
+        analyzer.model = "test-model"
+        current = [
+            {
+                "id": 21,
+                "title": "VLA for UAV Control",
+                "abstract": "Physical AI control.",
+                "tags_json": '{"domains":["aerial_edge"],"methods":["physical_ai"]}',
+                "code_url": "https://github.test/code",
+            }
+        ]
+        baseline = [
+            {
+                "id": 10,
+                "title": "Earlier UAV Control",
+                "abstract": "Conventional control.",
+                "tags_json": '{"domains":["aerial_edge"],"methods":["marl"]}',
+            }
+        ]
+
+        result = analyzer.analyze(current, baseline, 7, {"runs": 7, "source_errors": 1})
+
+        self.assertEqual(result.emerging_signals[0].confidence, "Weak")
+        content = responses.kwargs["input"][1]["content"]
+        payload = json.loads(content.split("주간 분석을 작성하세요:\n", 1)[1])
+        self.assertEqual(payload["metrics"]["current_unique_papers"], 1)
+        physical = next(
+            item for item in payload["metrics"]["tag_comparison"] if item["name"] == "physical_ai"
+        )
+        self.assertTrue(physical["newly_observed"])
+        self.assertEqual(payload["current_papers"][0]["id"], "P21")
+        self.assertEqual(payload["baseline_papers"][0]["id"], "P10")
+        self.assertIs(responses.kwargs["text_format"], WeeklyTrendSchema)
+
+    def test_weekly_metrics_normalize_the_28_day_baseline(self):
+        current = [{"tags_json": '{"domains":["sagin"],"methods":["marl"]}'}] * 2
+        baseline = [{"tags_json": '{"domains":["sagin"],"methods":["marl"]}'}] * 8
+
+        metrics = weekly_signal_metrics(current, baseline)
+
+        sagin = next(item for item in metrics["tag_comparison"] if item["name"] == "sagin")
+        self.assertEqual(sagin["current_count"], 2)
+        self.assertEqual(sagin["baseline_weekly_average"], 2.0)
 
 
 if __name__ == "__main__":

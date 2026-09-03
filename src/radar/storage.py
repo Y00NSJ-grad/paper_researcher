@@ -347,6 +347,46 @@ class PaperStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def collection_health(self, days: int) -> dict:
+        since = datetime.now(UTC) - timedelta(days=days)
+        with self.connect() as connection:
+            runs = connection.execute(
+                """
+                SELECT stats_json, error FROM pipeline_runs
+                WHERE started_at >= ? AND status != 'running'
+                """,
+                (_iso(since),),
+            ).fetchall()
+            sources = connection.execute(
+                """
+                SELECT source, COUNT(DISTINCT paper_id) AS paper_count
+                FROM paper_versions WHERE seen_at >= ?
+                GROUP BY source ORDER BY source
+                """,
+                (_iso(since),),
+            ).fetchall()
+
+        source_failures: dict[str, int] = {}
+        source_errors = 0
+        for run in runs:
+            try:
+                stats = json.loads(run["stats_json"] or "{}")
+            except json.JSONDecodeError:
+                stats = {}
+            source_errors += int(stats.get("source_errors", 0))
+            for line in (run["error"] or "").splitlines():
+                if " failed" not in line:
+                    continue
+                source = line.split(" ", 1)[0]
+                source_failures[source] = source_failures.get(source, 0) + 1
+        return {
+            "window_days": days,
+            "runs": len(runs),
+            "source_errors": source_errors,
+            "source_failures": source_failures,
+            "source_papers": {row["source"]: row["paper_count"] for row in sources},
+        }
+
     def record_feedback(self, paper_id: int, value: str, source: str = "dashboard") -> dict:
         """Append a verdict. History is kept; the newest row is the current one."""
         if value not in FEEDBACK_VALUES:

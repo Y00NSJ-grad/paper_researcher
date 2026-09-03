@@ -223,6 +223,11 @@ Physical AI, Quantum AI, 도메인 동향을 각각 정리합니다. 분석 문�
 근거로 제시하며, `OPENAI_API_KEY`가 없거나 호출에 실패하면 기존 정량 Trend Map으로
 자동 폴백합니다.
 
+Weekly 리포트는 최근 7일을 직전 28일의 주간 평균과 비교해 emerging/weakening
+signals, cross-domain convergence, 읽을 논문, 연구 기회, 다음 주 watchlist를
+생성합니다. 각 인사이트에는 근거 논문과 Strong/Moderate/Weak/Insufficient data
+신뢰도가 포함되며, 최근 수집 실행의 소스별 커버리지와 오류 수도 함께 표시됩니다.
+
 ## 로컬 대시보드
 
 SQLite에 쌓인 데이터, 쿼리 실적, 점수 책정 과정, Trend Map을 브라우저에서 확인합니다.

@@ -1,6 +1,13 @@
 import unittest
 
-from radar.models import MonthlyTrendAnalysis, TrendEvidence, TrendSection
+from radar.models import (
+    MonthlyTrendAnalysis,
+    TrendEvidence,
+    TrendSection,
+    WeeklyInsight,
+    WeeklyPaperPick,
+    WeeklyTrendAnalysis,
+)
 from radar.reports import render_digest, render_trend_report, trend_counts
 
 
@@ -55,6 +62,55 @@ class ReportsTest(unittest.TestCase):
         self.assertIn("도메인 부문", report)
         self.assertIn("[Physical AI for UAV Networks](https://example.test/paper-7)", report)
         self.assertNotIn("P999", report)
+
+    def test_weekly_report_renders_actions_evidence_confidence_and_coverage(self):
+        row = {
+            "id": 8,
+            "title": "VLA for Satellite Robotics",
+            "primary_url": "https://example.test/paper-8",
+            "score": 81.0,
+            "tags_json": '{"domains":["ntn_satellite"],"methods":["physical_ai"]}',
+        }
+        insight = WeeklyInsight(
+            title="새 결합",
+            insight="VLA와 위성 로봇의 결합이 관찰됨",
+            confidence="Weak",
+            paper_ids=["P8", "P404"],
+        )
+        analysis = WeeklyTrendAnalysis(
+            research_pulse="이번 주에는 초기 신호가 관찰됐습니다.",
+            emerging_signals=[insight],
+            cross_domain_convergence=[insight],
+            papers_worth_reading=[WeeklyPaperPick("P8", "새 아이디어", "연구와 직접 연결")],
+            research_opportunities=[insight],
+            watchlist=[insight],
+            data_coverage="단일 논문 기반입니다.",
+        )
+
+        report = render_trend_report(
+            "weekly-trends",
+            [row],
+            7,
+            analysis,
+            evidence_rows=[row],
+            collection_coverage={
+                "runs": 7,
+                "source_errors": 2,
+                "source_papers": {"arxiv": 3},
+            },
+        )
+
+        self.assertIn("GPT Weekly Research Pulse", report)
+        self.assertIn("Emerging Signals", report)
+        self.assertIn("Cross-domain Convergence", report)
+        self.assertIn("Papers Worth Reading", report)
+        self.assertIn("Research Opportunities", report)
+        self.assertIn("Watchlist for Next Week", report)
+        self.assertIn("`Weak`", report)
+        self.assertIn("[VLA for Satellite Robotics](https://example.test/paper-8)", report)
+        self.assertNotIn("P404", report)
+        self.assertIn("Source errors: 2", report)
+        self.assertIn("arxiv 3", report)
 
 
 if __name__ == "__main__":
