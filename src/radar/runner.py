@@ -162,7 +162,6 @@ class RadarRunner:
             if kind == "daily":
                 rows = [row for row in rows if int(row["id"]) in new_ids]
             rows = rows[:top_n]
-            self._summarize_rows(rows[:summarize_n])
             refreshed = {
                 int(row["id"]): row for row in self.store.papers_for_run(run_id, row_limit)
             }
