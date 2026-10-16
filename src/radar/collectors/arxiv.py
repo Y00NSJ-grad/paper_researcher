@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 import xml.etree.ElementTree as ET
 from collections.abc import Iterable, Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from urllib.parse import quote_plus
 
 import httpx
@@ -22,6 +22,10 @@ ARXIV = "{http://arxiv.org/schemas/atom}"
 # anchors and lets `radar.scoring` decide what is actually relevant.
 MAX_FEED_RESULTS = 200
 DATE_FORMAT = "%Y%m%d%H%M"
+# The full OR net over a two-week catch-up window makes arXiv time out or answer
+# 500, which keeps the window at two weeks and fails every run after. Long
+# windows are therefore fetched as consecutive slices of at most this length.
+WINDOW_CHUNK = timedelta(days=3)
 
 
 def _parse_datetime(value: str | None) -> datetime | None:
@@ -54,6 +58,19 @@ def _date_range(since: datetime, until: datetime) -> str:
     start = since.astimezone(UTC).strftime(DATE_FORMAT)
     end = until.astimezone(UTC).strftime(DATE_FORMAT)
     return f"submittedDate:[{start} TO {end}]"
+
+
+def window_chunks(
+    since: datetime, until: datetime, chunk: timedelta = WINDOW_CHUNK
+) -> list[tuple[datetime, datetime]]:
+    """Split `[since, until]` into consecutive slices no longer than `chunk`."""
+    chunks: list[tuple[datetime, datetime]] = []
+    start = since
+    while start < until:
+        end = min(start + chunk, until)
+        chunks.append((start, end))
+        start = end
+    return chunks or [(since, until)]
 
 
 def search_expression(
@@ -119,20 +136,27 @@ class ArxivCollector:
         queries: list[str],
         since: datetime,
         limit: int = 25,
+        until: datetime | None = None,
     ) -> dict[str, list[PaperCandidate]]:
         if not queries:
             return {}
-        expression = search_expression(self.anchors, queries, since)
-        url = (
-            f"{self.endpoint}?search_query={quote_plus(expression)}"
-            f"&start=0&max_results={min(limit * len(queries), MAX_FEED_RESULTS)}"
-            "&sortBy=submittedDate&sortOrder=descending"
-        )
-        response = self._get_with_retry(url)
-
         results: dict[str, list[PaperCandidate]] = {query: [] for query in queries}
-        for candidate in self._parse(response.text, since):
-            results[route_to_query(candidate, queries)].append(candidate)
+        seen: set[str] = set()
+        for start, end in window_chunks(since, until or datetime.now(UTC)):
+            expression = search_expression(self.anchors, queries, start, end)
+            url = (
+                f"{self.endpoint}?search_query={quote_plus(expression)}"
+                f"&start=0&max_results={min(limit * len(queries), MAX_FEED_RESULTS)}"
+                "&sortBy=submittedDate&sortOrder=descending"
+            )
+            response = self._get_with_retry(url)
+            for candidate in self._parse(response.text, since):
+                # Slice bounds are inclusive at minute precision, so a paper on
+                # a boundary can come back twice.
+                if candidate.source_id in seen:
+                    continue
+                seen.add(candidate.source_id)
+                results[route_to_query(candidate, queries)].append(candidate)
         return results
 
     def _parse(self, payload: str, since: datetime) -> list[PaperCandidate]:

@@ -39,8 +39,9 @@ class OpenReviewCollector:
     @staticmethod
     def search_params(query: str, since: datetime, limit: int = 25) -> dict[str, str | int]:
         """The request this collector sends. Shared with the dashboard preview."""
+        # API v2 renamed the search parameter; `query` is now rejected with a 400.
         return {
-            "query": query,
+            "term": query,
             "source": "forum",
             "sort": "tmdate:desc",
             "limit": min(limit, 1000),

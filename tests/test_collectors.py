@@ -1,7 +1,8 @@
 import sqlite3
 import tempfile
 import unittest
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from itertools import pairwise
 from pathlib import Path
 from unittest import mock
 
@@ -21,6 +22,8 @@ from radar.collectors.openreview import OpenReviewCollector
 from radar.collectors.semantic_scholar import SemanticScholarCollector
 
 SINCE = datetime(2026, 8, 8, tzinfo=UTC)
+# arXiv slices its window up to now; tests pin the end so they send one request.
+UNTIL = datetime(2026, 8, 10, tzinfo=UTC)
 
 
 def client_with(handler):
@@ -48,8 +51,8 @@ class CollectorTest(unittest.TestCase):
             backoff_base_seconds=0,
         )
         collector.client = client_with(handler)
-        papers = collector.search("network learning", SINCE)
-        self.assertEqual(papers, [])
+        papers = collector.search_many(["network learning"], SINCE, until=UNTIL)
+        self.assertEqual(papers, {"network learning": []})
         self.assertEqual(calls, 2)
 
     def test_arxiv_batches_queries_and_routes_results_locally(self):
@@ -86,6 +89,7 @@ class CollectorTest(unittest.TestCase):
         results = collector.search_many(
             ["network learning", '"UAV trajectory" control'],
             SINCE,
+            until=UNTIL,
         )
 
         self.assertEqual(calls, 1)
@@ -108,7 +112,7 @@ class CollectorTest(unittest.TestCase):
             min_interval_seconds=0,
         )
         collector.client = client_with(handler)
-        collector.search_many(["SAGIN routing", '"LEO satellite" handover'], SINCE)
+        collector.search_many(["SAGIN routing", '"LEO satellite" handover'], SINCE, until=UNTIL)
 
         search_query = captured["search_query"]
         # Anchors are ORed, never ANDed word by word: ANDing collapses recall to
@@ -135,7 +139,7 @@ class CollectorTest(unittest.TestCase):
 
         collector = ArxivCollector("test-agent", ["satellite network"], min_interval_seconds=0)
         collector.client = client_with(handler)
-        results = collector.search_many(["SAGIN routing", "UAV offloading"], SINCE)
+        results = collector.search_many(["SAGIN routing", "UAV offloading"], SINCE, until=UNTIL)
 
         # The net is wider than any one query, so scoring — not the query text —
         # gets the final say on a paper the net legitimately caught.
@@ -163,9 +167,41 @@ class CollectorTest(unittest.TestCase):
 
         collector = ArxivCollector("test-agent", ["SAGIN"], min_interval_seconds=0)
         collector.client = client_with(handler)
-        results = collector.search_many(["SAGIN routing"], SINCE)
+        results = collector.search_many(["SAGIN routing"], SINCE, until=UNTIL)
 
         self.assertEqual([paper.arxiv_id for paper in results["SAGIN routing"]], ["2601.00009"])
+
+    def test_arxiv_splits_a_long_catchup_window_into_slices(self):
+        """A two-week OR net made arXiv answer 500 on every run after an outage."""
+        ranges: list[str] = []
+        entry = """<feed xmlns="http://www.w3.org/2005/Atom">
+          <entry>
+            <id>https://arxiv.org/abs/2608.00004v1</id>
+            <title>SAGIN Routing</title>
+            <summary>On a slice boundary.</summary>
+            <published>2026-08-09T00:00:00+00:00</published>
+            <updated>2026-08-09T00:00:00+00:00</updated>
+            <author><name>E. Author</name></author>
+          </entry>
+        </feed>"""
+
+        def handler(request):
+            search_query = request.url.params["search_query"]
+            ranges.append(search_query[search_query.index("submittedDate:") :])
+            return httpx.Response(200, text=entry)
+
+        collector = ArxivCollector("test-agent", ["SAGIN"], min_interval_seconds=0)
+        collector.client = client_with(handler)
+        since = UNTIL - timedelta(days=10)
+        results = collector.search_many(["SAGIN routing"], since, until=UNTIL)
+
+        self.assertEqual(len(ranges), 4)
+        self.assertIn(since.strftime("%Y%m%d%H%M"), ranges[0])
+        # Each slice starts where the previous one ended, so nothing falls between.
+        for previous, current in pairwise(ranges):
+            previous_end = previous.split(" TO ")[1].rstrip("]")
+            self.assertTrue(current.startswith(f"submittedDate:[{previous_end} TO "))
+        self.assertEqual([paper.arxiv_id for paper in results["SAGIN routing"]], ["2608.00004"])
 
     def test_retry_backoff_is_capped_and_jittered(self):
         policy = RetryPolicy(max_attempts=5, backoff_base_seconds=20.0, max_backoff_seconds=180.0)
@@ -372,6 +408,8 @@ class CollectorTest(unittest.TestCase):
 
         def handler(request):
             self.assertEqual(request.url.params["source"], "forum")
+            self.assertEqual(request.url.params["term"], "network learning")
+            self.assertNotIn("query", request.url.params)
             return httpx.Response(
                 200,
                 json={
